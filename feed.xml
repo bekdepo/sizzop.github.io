@@ -2,54 +2,95 @@
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
     <title>Blog Thingy</title>
-    <description>Probably something about hacking.
+    <description>A blog. A place for me to write about things. Probably some things about hacking.
 </description>
     <link>https://sizzop.github.io/</link>
     <atom:link href="https://sizzop.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Fri, 01 Jul 2016 13:56:03 -0400</pubDate>
-    <lastBuildDate>Fri, 01 Jul 2016 13:56:03 -0400</lastBuildDate>
+    <pubDate>Tue, 05 Jul 2016 21:56:27 -0400</pubDate>
+    <lastBuildDate>Tue, 05 Jul 2016 21:56:27 -0400</lastBuildDate>
     <generator>Jekyll v3.1.6</generator>
     
       <item>
-        <title>Welcome to Jekyll!</title>
-        <description>&lt;p&gt;You’ll find this post in your &lt;code class=&quot;highlighter-rouge&quot;&gt;_posts&lt;/code&gt; directory. Go ahead and edit it and re-build the site to see your changes. You can rebuild the site in many different ways, but the most common way is to run &lt;code class=&quot;highlighter-rouge&quot;&gt;jekyll serve&lt;/code&gt;, which launches a web server and auto-regenerates your site when a file is updated.&lt;/p&gt;
+        <title>Kernel Hacking With HEVD Part 1 - The Setup</title>
+        <description>&lt;p&gt;I’ve been spending a lot of time lately playing with the &lt;a href=&quot;https://github.com/hacksysteam/HackSysExtremeVulnerableDriver&quot;&gt;Hacksys Extreme Vulnerable Driver&lt;/a&gt; created by &lt;a href=&quot;https://twitter.com/HackSysTeam&quot;&gt;Ashfaq Ansari&lt;/a&gt; (huge kudos!). I wanted to do some of the challenges in Win7x64 however the instructions on the github page made some assumptions that were not true for me so I had to figure it out as I went. Every step of the process from compiling the driver all the way to finalizing an exploit was a learning opportunity for me so I thought I would share the experience here for others who may find it interesting.&lt;/p&gt;
 
-&lt;p&gt;To add new posts, simply add a file in the &lt;code class=&quot;highlighter-rouge&quot;&gt;_posts&lt;/code&gt; directory that follows the convention &lt;code class=&quot;highlighter-rouge&quot;&gt;YYYY-MM-DD-name-of-post.ext&lt;/code&gt; and includes the necessary front matter. Take a look at the source for this post to get an idea about how it works.&lt;/p&gt;
+&lt;h3 id=&quot;compiling-the-driver&quot;&gt;Compiling the Driver&lt;/h3&gt;
 
-&lt;p&gt;Jekyll also offers powerful support for code snippets:&lt;/p&gt;
+&lt;p&gt;So starting from scratch, you’ll want to install &lt;a href=&quot;https://www.visualstudio.com/products/visual-studio-community-vs&quot;&gt;Visual Studio 2015&lt;/a&gt; along with the latest SDK. Also install the &lt;a href=&quot;https://developer.microsoft.com/en-us/windows/hardware/windows-driver-kit&quot;&gt;Windows Driver Kit (WDK)&lt;/a&gt;. I wanted to target Windows 7 x64 so I downloaded the &lt;a href=&quot;https://www.microsoft.com/en-us/download/details.aspx?id=3138&quot;&gt;Windows 7 SDK&lt;/a&gt; too.&lt;/p&gt;
 
-&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-ruby&quot; data-lang=&quot;ruby&quot;&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;print_hi&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
-  &lt;span class=&quot;nb&quot;&gt;puts&lt;/span&gt; &lt;span class=&quot;s2&quot;&gt;&quot;Hi, &lt;/span&gt;&lt;span class=&quot;si&quot;&gt;#{&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;si&quot;&gt;}&lt;/span&gt;&lt;span class=&quot;s2&quot;&gt;&quot;&lt;/span&gt;
-&lt;span class=&quot;k&quot;&gt;end&lt;/span&gt;
-&lt;span class=&quot;n&quot;&gt;print_hi&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s1&quot;&gt;&#39;Tom&#39;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
-&lt;span class=&quot;c1&quot;&gt;#=&amp;gt; prints &#39;Hi, Tom&#39; to STDOUT.&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;With all that installed, I just downloaded a zip file of the HEVD source code from &lt;a href=&quot;https://github.com/hacksysteam/HackSysExtremeVulnerableDriver/archive/master.zip&quot;&gt;here&lt;/a&gt; and extracted the driver source code to a directory. Next, open Visual Studio and start a New Project. After installing the WDK you should have the option to create an empty kernel mode driver. Give your project a useful name (e.g. HEVD-win7x64) and hit OK:&lt;/p&gt;
 
-&lt;p&gt;Check out the &lt;a href=&quot;http://jekyllrb.com/docs/home&quot;&gt;Jekyll docs&lt;/a&gt; for more info on how to get the most out of Jekyll. File all bugs/feature requests at &lt;a href=&quot;https://github.com/jekyll/jekyll&quot;&gt;Jekyll’s GitHub repo&lt;/a&gt;. If you have questions, you can ask them on &lt;a href=&quot;https://talk.jekyllrb.com/&quot;&gt;Jekyll Talk&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;img src=&quot;/images/hevd1-ss1.jpg&quot; alt=&quot;New Kernel Mode Driver&quot; /&gt;&lt;/p&gt;
 
+&lt;p&gt;Right-click on the Header Files folder in the Solution Explorer on the right and click Add &amp;gt; Existing Item… Browse to the driver source code directory and import all the .h files. Do the same for the Source Files folder in Solution Explorer and import all the .c files. Now under the Project menu, select HEVD-win7x64 Properties… to open the project properties dialog. I had to change a few things in here to finally get it working correctly. Click the C/C++ node and change “Treat Warnings As Errors” to “No (/WX-)”. Click the Driver Settings node and make sure the Target OS is Windows 7 and Target Platform is Desktop. At this point you should be ready to build! Under the Build menu, click Build Solution and if all goes well you should find HEVD-Win7x64.sys under your project folder in x64\Release:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd1-ss3.jpg&quot; alt=&quot;Driver Compiled&quot; /&gt;&lt;/p&gt;
+
+&lt;h3 id=&quot;installing-the-driver&quot;&gt;Installing the Driver&lt;/h3&gt;
+&lt;p&gt;Windows 7 x64 doesn’t allow you to just install any old driver. As MSDN puts it, “Starting with Windows Vista, all 64-bit versions of Windows require driver code to have a digital signature for the driver to load.” There are various workarounds that Microsoft gives you for testing drivers but I think the easiest option is using the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/hardware/ff553484(v=vs.85).aspx&quot;&gt;TESTSIGNING boot configuration option&lt;/a&gt;. This allows you to use the test certificate with which Visual Studio signed the driver and doesn’t require the fully trusted verification chain.&lt;/p&gt;
+
+&lt;p&gt;Open an administrator command prompt and issue the following command:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;bcdedit -set TESTSIGNING on
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;and reboot. You’ll get a neat little watermark in the corner to confirm your success :). &lt;img src=&quot;/images/hevd1-ss4.jpg&quot; alt=&quot;Watermark&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Loading the driver requires one more step. Normally drivers are created with an installer and all that but for testing the best option is to use the &lt;a href=&quot;https://www.osronline.com/article.cfm?article=157&quot;&gt;OSR Driver Loader&lt;/a&gt;. Download the utility from this link (registration required… mailinator is your friend) and extract OSRLOADER.exe. Point it at your newly compiled driver and you’ll need to “Register Service” first. Once it is registered, click “Start Service” and you’re in business!&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd1-ss5.jpg&quot; alt=&quot;Driver Loaded&quot; /&gt;&lt;/p&gt;
+
+&lt;h3 id=&quot;kernel-debugging&quot;&gt;Kernel Debugging&lt;/h3&gt;
+&lt;p&gt;It was surprisingly difficult for me to get kernel debugging properly configured. Apparently in VMWare Workstation it is a breeze to configure a shared serial port pipe for this, however VMWare Fusion on OSX doesn’t officially support it. The most useful link I found to get this working is &lt;a href=&quot;https://samsclass.info/126/proj/p12-WinDbg&quot;&gt;this one&lt;/a&gt; which appears to be a homework assignment for some class. It is outdated in some parts but the useful tl;dr of it all is basically that you need to first shut down (full shutdown, not just suspend) your debugging VM (I used a Win10 x64 VM) and append this to the .vmx file:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;serial1.present = &quot;TRUE&quot;
+serial1.fileType = &quot;pipe&quot;
+serial1.fileName = &quot;/private/tmp/serial&quot;
+serial1.tryNoRxLoss = &quot;FALSE&quot;
+serial1.pipe.endPoint = &quot;client&quot;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;Then before you shut down your debugee VM (the Win7x64 one), we need to do another bcdedit command. Open an administrator command prompt and enter the following:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;bcdedit /dbgsettings SERIAL DEBUGPORT:2 BAUDRATE:115200
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;and then shut it down too. Open up the debugee’s .vmx file and similarly append the following to it:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;serial1.present = &quot;TRUE&quot;
+serial1.fileType = &quot;pipe&quot;
+serial1.fileName = &quot;/private/tmp/serial&quot;
+serial1.tryNoRxLoss = &quot;FALSE&quot;
+serial1.pipe.endPoint = &quot;server&quot;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;Next for some reason the article recommends sharing the /private/tmp folder with both VMs. I don’t understand this step but I did it anyway because #yolo. At any rate, start up the debugging VM and open up WinDBG AMD64 (you already &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/hardware/ff551063(v=vs.85).aspx&quot;&gt;installed that&lt;/a&gt; on your debugging VM, right?). Click File &amp;gt; Kernel Debug… to bring up the kernel connection dialog box. Click the Serial tab and change COM1 to COM2 and hit OK. Now fire up the Win7x64 debugee VM and cross your fingers. If all goes well you should see this in your debugger:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd1-ss6.jpg&quot; alt=&quot;Debugging works!&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;If you registered the HEVD driver service to start automatically then it should be loaded and ready to go. You can check this by issuing a Break in the debugger and issuing the &lt;code class=&quot;highlighter-rouge&quot;&gt;lmkm HEVD_Win7x64&lt;/code&gt; command:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd1-ss7.jpg&quot; alt=&quot;No HEVD&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;In this case I do not have it loaded and need to use OSRLOADER.exe to start it again. Before doing so however, I am going to make a quick tweak to my debugging environment so I can see the debug output that Ashfaq worked so hard to include :). You can read the background on this issue in &lt;a href=&quot;http://www.osronline.com/article.cfm?article=295&quot;&gt;this thread&lt;/a&gt; but basically to see the debug output, you have to issue the following command during each kernel debugging session (meaning after reboots too):&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;ed nt!Kd_DEFAULT_MASK 8
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;Once that is done, type &lt;code class=&quot;highlighter-rouge&quot;&gt;g&lt;/code&gt; to continue execution of the debugee VM so we can reload the driver. Now go ahead and use OSRLOADER.exe to start the driver service. Finally if all goes well you reach the payoff!&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd1-ss8.jpg&quot; alt=&quot;HEVD Loaded&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;If you see that message then you’re in good shape, congrats! Go get a beer and celebrate now because in the next post in this series we’ll get down to banging out some code to try to exploit this thing.&lt;/p&gt;
 </description>
-        <pubDate>Fri, 01 Jul 2016 13:52:16 -0400</pubDate>
-        <link>https://sizzop.github.io/jekyll/update/2016/07/01/welcome-to-jekyll.html</link>
-        <guid isPermaLink="true">https://sizzop.github.io/jekyll/update/2016/07/01/welcome-to-jekyll.html</guid>
-        
-        
-        <category>jekyll</category>
-        
-        <category>update</category>
-        
-      </item>
-    
-      <item>
-        <title>Hello World</title>
-        <description>&lt;h1 id=&quot;hello-world&quot;&gt;Hello World&lt;/h1&gt;
-
-&lt;p&gt;–&lt;/p&gt;
-
-&lt;p&gt;Trying this newfangled blogging thing out.&lt;/p&gt;
-
-</description>
-        <pubDate>Fri, 01 Jul 2016 00:00:00 -0400</pubDate>
-        <link>https://sizzop.github.io/2016/07/01/hello-world.html</link>
-        <guid isPermaLink="true">https://sizzop.github.io/2016/07/01/hello-world.html</guid>
+        <pubDate>Tue, 05 Jul 2016 00:00:00 -0400</pubDate>
+        <link>https://sizzop.github.io/2016/07/05/kernel-hacking-with-hevd-part-1.html</link>
+        <guid isPermaLink="true">https://sizzop.github.io/2016/07/05/kernel-hacking-with-hevd-part-1.html</guid>
         
         
       </item>

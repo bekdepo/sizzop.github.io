@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Kernel Hacking With HEVD Part 1 - The Setup</title>
+  <meta name="description" content="I’ve been spending a lot of time lately playing with the Hacksys Extreme Vulnerable Driver created by Ashfaq Ansari (huge kudos!). I wanted to do some of the...">
+
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="canonical" href="https://sizzop.github.io/2016/07/05/kernel-hacking-with-hevd-part-1.html">
+  <link rel="alternate" type="application/rss+xml" title="Blog Thingy" href="https://sizzop.github.io/feed.xml">
+</head>
+
+
+  <body>
+
+    <header class="site-header">
+
+  <div class="wrapper">
+
+    <a class="site-title" href="/">Blog Thingy</a>
+
+    <nav class="site-nav">
+      <a href="#" class="menu-icon">
+        <svg viewBox="0 0 18 15">
+          <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+          <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+          <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+        </svg>
+      </a>
+
+      <div class="trigger">
+        
+          
+          <a class="page-link" href="/about/">About</a>
+          
+        
+          
+        
+          
+        
+          
+        
+      </div>
+    </nav>
+
+  </div>
+
+</header>
+
+
+    <div class="page-content">
+      <div class="wrapper">
+        <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title" itemprop="name headline">Kernel Hacking With HEVD Part 1 - The Setup</h1>
+    <p class="post-meta"><time datetime="2016-07-05T00:00:00-04:00" itemprop="datePublished">Jul 5, 2016</time></p>
+  </header>
+
+  <div class="post-content" itemprop="articleBody">
+    <p>I’ve been spending a lot of time lately playing with the <a href="https://github.com/hacksysteam/HackSysExtremeVulnerableDriver">Hacksys Extreme Vulnerable Driver</a> created by <a href="https://twitter.com/HackSysTeam">Ashfaq Ansari</a> (huge kudos!). I wanted to do some of the challenges in Win7x64 however the instructions on the github page made some assumptions that were not true for me so I had to figure it out as I went. Every step of the process from compiling the driver all the way to finalizing an exploit was a learning opportunity for me so I thought I would share the experience here for others who may find it interesting.</p>
+
+<h3 id="compiling-the-driver">Compiling the Driver</h3>
+
+<p>So starting from scratch, you’ll want to install <a href="https://www.visualstudio.com/products/visual-studio-community-vs">Visual Studio 2015</a> along with the latest SDK. Also install the <a href="https://developer.microsoft.com/en-us/windows/hardware/windows-driver-kit">Windows Driver Kit (WDK)</a>. I wanted to target Windows 7 x64 so I downloaded the <a href="https://www.microsoft.com/en-us/download/details.aspx?id=3138">Windows 7 SDK</a> too.</p>
+
+<p>With all that installed, I just downloaded a zip file of the HEVD source code from <a href="https://github.com/hacksysteam/HackSysExtremeVulnerableDriver/archive/master.zip">here</a> and extracted the driver source code to a directory. Next, open Visual Studio and start a New Project. After installing the WDK you should have the option to create an empty kernel mode driver. Give your project a useful name (e.g. HEVD-win7x64) and hit OK:</p>
+
+<p><img src="/images/hevd1-ss1.jpg" alt="New Kernel Mode Driver" /></p>
+
+<p>Right-click on the Header Files folder in the Solution Explorer on the right and click Add &gt; Existing Item… Browse to the driver source code directory and import all the .h files. Do the same for the Source Files folder in Solution Explorer and import all the .c files. Now under the Project menu, select HEVD-win7x64 Properties… to open the project properties dialog. I had to change a few things in here to finally get it working correctly. Click the C/C++ node and change “Treat Warnings As Errors” to “No (/WX-)”. Click the Driver Settings node and make sure the Target OS is Windows 7 and Target Platform is Desktop. At this point you should be ready to build! Under the Build menu, click Build Solution and if all goes well you should find HEVD-Win7x64.sys under your project folder in x64\Release:</p>
+
+<p><img src="/images/hevd1-ss3.jpg" alt="Driver Compiled" /></p>
+
+<h3 id="installing-the-driver">Installing the Driver</h3>
+<p>Windows 7 x64 doesn’t allow you to just install any old driver. As MSDN puts it, “Starting with Windows Vista, all 64-bit versions of Windows require driver code to have a digital signature for the driver to load.” There are various workarounds that Microsoft gives you for testing drivers but I think the easiest option is using the <a href="https://msdn.microsoft.com/en-us/library/windows/hardware/ff553484(v=vs.85).aspx">TESTSIGNING boot configuration option</a>. This allows you to use the test certificate with which Visual Studio signed the driver and doesn’t require the fully trusted verification chain.</p>
+
+<p>Open an administrator command prompt and issue the following command:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>bcdedit -set TESTSIGNING on
+</code></pre>
+</div>
+
+<p>and reboot. You’ll get a neat little watermark in the corner to confirm your success :). <img src="/images/hevd1-ss4.jpg" alt="Watermark" /></p>
+
+<p>Loading the driver requires one more step. Normally drivers are created with an installer and all that but for testing the best option is to use the <a href="https://www.osronline.com/article.cfm?article=157">OSR Driver Loader</a>. Download the utility from this link (registration required… mailinator is your friend) and extract OSRLOADER.exe. Point it at your newly compiled driver and you’ll need to “Register Service” first. Once it is registered, click “Start Service” and you’re in business!</p>
+
+<p><img src="/images/hevd1-ss5.jpg" alt="Driver Loaded" /></p>
+
+<h3 id="kernel-debugging">Kernel Debugging</h3>
+<p>It was surprisingly difficult for me to get kernel debugging properly configured. Apparently in VMWare Workstation it is a breeze to configure a shared serial port pipe for this, however VMWare Fusion on OSX doesn’t officially support it. The most useful link I found to get this working is <a href="https://samsclass.info/126/proj/p12-WinDbg">this one</a> which appears to be a homework assignment for some class. It is outdated in some parts but the useful tl;dr of it all is basically that you need to first shut down (full shutdown, not just suspend) your debugging VM (I used a Win10 x64 VM) and append this to the .vmx file:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>serial1.present = "TRUE"
+serial1.fileType = "pipe"
+serial1.fileName = "/private/tmp/serial"
+serial1.tryNoRxLoss = "FALSE"
+serial1.pipe.endPoint = "client"
+</code></pre>
+</div>
+
+<p>Then before you shut down your debugee VM (the Win7x64 one), we need to do another bcdedit command. Open an administrator command prompt and enter the following:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>bcdedit /dbgsettings SERIAL DEBUGPORT:2 BAUDRATE:115200
+</code></pre>
+</div>
+
+<p>and then shut it down too. Open up the debugee’s .vmx file and similarly append the following to it:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>serial1.present = "TRUE"
+serial1.fileType = "pipe"
+serial1.fileName = "/private/tmp/serial"
+serial1.tryNoRxLoss = "FALSE"
+serial1.pipe.endPoint = "server"
+</code></pre>
+</div>
+
+<p>Next for some reason the article recommends sharing the /private/tmp folder with both VMs. I don’t understand this step but I did it anyway because #yolo. At any rate, start up the debugging VM and open up WinDBG AMD64 (you already <a href="https://msdn.microsoft.com/en-us/library/windows/hardware/ff551063(v=vs.85).aspx">installed that</a> on your debugging VM, right?). Click File &gt; Kernel Debug… to bring up the kernel connection dialog box. Click the Serial tab and change COM1 to COM2 and hit OK. Now fire up the Win7x64 debugee VM and cross your fingers. If all goes well you should see this in your debugger:</p>
+
+<p><img src="/images/hevd1-ss6.jpg" alt="Debugging works!" /></p>
+
+<p>If you registered the HEVD driver service to start automatically then it should be loaded and ready to go. You can check this by issuing a Break in the debugger and issuing the <code class="highlighter-rouge">lmkm HEVD_Win7x64</code> command:</p>
+
+<p><img src="/images/hevd1-ss7.jpg" alt="No HEVD" /></p>
+
+<p>In this case I do not have it loaded and need to use OSRLOADER.exe to start it again. Before doing so however, I am going to make a quick tweak to my debugging environment so I can see the debug output that Ashfaq worked so hard to include :). You can read the background on this issue in <a href="http://www.osronline.com/article.cfm?article=295">this thread</a> but basically to see the debug output, you have to issue the following command during each kernel debugging session (meaning after reboots too):</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>ed nt!Kd_DEFAULT_MASK 8
+</code></pre>
+</div>
+
+<p>Once that is done, type <code class="highlighter-rouge">g</code> to continue execution of the debugee VM so we can reload the driver. Now go ahead and use OSRLOADER.exe to start the driver service. Finally if all goes well you reach the payoff!</p>
+
+<p><img src="/images/hevd1-ss8.jpg" alt="HEVD Loaded" /></p>
+
+<p>If you see that message then you’re in good shape, congrats! Go get a beer and celebrate now because in the next post in this series we’ll get down to banging out some code to try to exploit this thing.</p>
+
+  </div>
+
+</article>
+
+      </div>
+    </div>
+
+    <footer class="site-footer">
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Blog Thingy</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li>Blog Thingy</li>
+          <li><a href="mailto:sizzop@gmail.com">sizzop@gmail.com</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col footer-col-2">
+        <ul class="social-media-list">
+          
+          <li>
+            <a href="https://github.com/sizzop"><span class="icon icon--github"><svg viewBox="0 0 16 16"><path fill="#828282" d="M7.999,0.431c-4.285,0-7.76,3.474-7.76,7.761 c0,3.428,2.223,6.337,5.307,7.363c0.388,0.071,0.53-0.168,0.53-0.374c0-0.184-0.007-0.672-0.01-1.32 c-2.159,0.469-2.614-1.04-2.614-1.04c-0.353-0.896-0.862-1.135-0.862-1.135c-0.705-0.481,0.053-0.472,0.053-0.472 c0.779,0.055,1.189,0.8,1.189,0.8c0.692,1.186,1.816,0.843,2.258,0.645c0.071-0.502,0.271-0.843,0.493-1.037 C4.86,11.425,3.049,10.76,3.049,7.786c0-0.847,0.302-1.54,0.799-2.082C3.768,5.507,3.501,4.718,3.924,3.65 c0,0,0.652-0.209,2.134,0.796C6.677,4.273,7.34,4.187,8,4.184c0.659,0.003,1.323,0.089,1.943,0.261 c1.482-1.004,2.132-0.796,2.132-0.796c0.423,1.068,0.157,1.857,0.077,2.054c0.497,0.542,0.798,1.235,0.798,2.082 c0,2.981-1.814,3.637-3.543,3.829c0.279,0.24,0.527,0.713,0.527,1.437c0,1.037-0.01,1.874-0.01,2.129 c0,0.208,0.14,0.449,0.534,0.373c3.081-1.028,5.302-3.935,5.302-7.362C15.76,3.906,12.285,0.431,7.999,0.431z"/></svg>
+</span><span class="username">sizzop</span></a>
+
+          </li>
+          
+
+          
+          <li>
+            <a href="https://twitter.com/sizzop"><span class="icon icon--twitter"><svg viewBox="0 0 16 16"><path fill="#828282" d="M15.969,3.058c-0.586,0.26-1.217,0.436-1.878,0.515c0.675-0.405,1.194-1.045,1.438-1.809c-0.632,0.375-1.332,0.647-2.076,0.793c-0.596-0.636-1.446-1.033-2.387-1.033c-1.806,0-3.27,1.464-3.27,3.27 c0,0.256,0.029,0.506,0.085,0.745C5.163,5.404,2.753,4.102,1.14,2.124C0.859,2.607,0.698,3.168,0.698,3.767 c0,1.134,0.577,2.135,1.455,2.722C1.616,6.472,1.112,6.325,0.671,6.08c0,0.014,0,0.027,0,0.041c0,1.584,1.127,2.906,2.623,3.206 C3.02,9.402,2.731,9.442,2.433,9.442c-0.211,0-0.416-0.021-0.615-0.059c0.416,1.299,1.624,2.245,3.055,2.271 c-1.119,0.877-2.529,1.4-4.061,1.4c-0.264,0-0.524-0.015-0.78-0.046c1.447,0.928,3.166,1.469,5.013,1.469 c6.015,0,9.304-4.983,9.304-9.304c0-0.142-0.003-0.283-0.009-0.423C14.976,4.29,15.531,3.714,15.969,3.058z"/></svg>
+</span><span class="username">sizzop</span></a>
+
+          </li>
+          
+        </ul>
+      </div>
+
+      <div class="footer-col footer-col-3">
+        <p>A blog. A place for me to write about things. Probably some things about hacking.
+</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+
+
+  </body>
+
+</html>
