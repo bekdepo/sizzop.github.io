@@ -6,13 +6,13 @@
 </description>
     <link>https://sizzop.github.io/</link>
     <atom:link href="https://sizzop.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Wed, 06 Jul 2016 15:26:38 -0400</pubDate>
-    <lastBuildDate>Wed, 06 Jul 2016 15:26:38 -0400</lastBuildDate>
+    <pubDate>Wed, 06 Jul 2016 16:52:51 -0400</pubDate>
+    <lastBuildDate>Wed, 06 Jul 2016 16:52:51 -0400</lastBuildDate>
     <generator>Jekyll v3.1.6</generator>
     
       <item>
         <title>Kernel Hacking With HEVD Part 2 - The Bug</title>
-        <description>&lt;p&gt;Now that you have your &lt;a href=&quot;http://localhost:4000/2016/07/05/kernel-hacking-with-hevd-part-1.html&quot;&gt;debugging environment&lt;/a&gt; set up, it’s time to get to the fun part – the exploit! The &lt;a href=&quot;https://github.com/hacksysteam/HackSysExtremeVulnerableDriver&quot;&gt;Hacksys Extreme Vulnerable Driver&lt;/a&gt; has a lot of interesting bugs to play with. My purpose in using this driver is to get familiar with ring 0 payloads more so than the actual vulnerability exploitation so I chose to stick with the easy stack overflow so I could focus on payload. Lets first take a look at the actual vulnerability.&lt;/p&gt;
+        <description>&lt;p&gt;Now that you have your &lt;a href=&quot;/2016/07/05/kernel-hacking-with-hevd-part-1.html&quot;&gt;debugging environment&lt;/a&gt; set up, it’s time to get to the fun part – the exploit! The &lt;a href=&quot;https://github.com/hacksysteam/HackSysExtremeVulnerableDriver&quot;&gt;Hacksys Extreme Vulnerable Driver&lt;/a&gt; has a lot of interesting bugs to play with. My purpose in using this driver is to get familiar with ring 0 payloads more so than the actual vulnerability exploitation so I chose to stick with the easy stack overflow so I could focus on payload. Lets first take a look at the actual vulnerability.&lt;/p&gt;
 
 &lt;h3 id=&quot;the-bug-source-code-review&quot;&gt;The Bug (Source Code Review)&lt;/h3&gt;
 &lt;p&gt;Since we have the source code available to us, we’ll take the easy route first and just look at what’s going on.&lt;/p&gt;
