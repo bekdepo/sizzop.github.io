@@ -167,17 +167,18 @@ PAGE:FFFFF880037281F1           jmp     loc_FFFFF8800372831E
     <span class="n">hTemplateFile</span> <span class="o">=</span> <span class="bp">None</span>
 
     <span class="n">handle</span> <span class="o">=</span> <span class="n">CreateFileW</span><span class="p">(</span><span class="n">lpFileName</span><span class="p">,</span>
-                                        <span class="n">dwDesiredAccess</span><span class="p">,</span>
-                                        <span class="n">dwShareMode</span><span class="p">,</span>
-                                        <span class="n">lpSecurityAttributes</span><span class="p">,</span>
-                                        <span class="n">dwCreationDisposition</span><span class="p">,</span>
-                                        <span class="n">dwFlagsAndAttributes</span><span class="p">,</span>
-                                        <span class="n">hTemplateFile</span><span class="p">)</span>
+                         <span class="n">dwDesiredAccess</span><span class="p">,</span>
+                         <span class="n">dwShareMode</span><span class="p">,</span>
+                         <span class="n">lpSecurityAttributes</span><span class="p">,</span>
+                         <span class="n">dwCreationDisposition</span><span class="p">,</span>
+                         <span class="n">dwFlagsAndAttributes</span><span class="p">,</span>
+                         <span class="n">hTemplateFile</span><span class="p">)</span>
+                         
     <span class="k">if</span> <span class="ow">not</span> <span class="n">handle</span> <span class="ow">or</span> <span class="n">handle</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span><span class="p">:</span>
         <span class="k">print</span> <span class="s">"</span><span class="se">\t</span><span class="s">[-]Error getting device handle: "</span> <span class="o">+</span> <span class="n">FormatError</span><span class="p">()</span>
         <span class="n">sys</span><span class="o">.</span><span class="nb">exit</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
         
-    <span class="k">print</span> <span class="s">"</span><span class="se">\t</span><span class="s">[+]Got device handle: </span><span class="si">%</span><span class="s">x"</span> <span class="o">%</span> <span class="n">handle</span>
+    <span class="k">print</span> <span class="s">"</span><span class="se">\t</span><span class="s">[+]Got device handle: 0x</span><span class="si">%</span><span class="s">x"</span> <span class="o">%</span> <span class="n">handle</span>
     <span class="k">return</span> <span class="n">handle</span>
 </code></pre>
 </div>
